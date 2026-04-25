@@ -123,6 +123,7 @@ func explicitAgents(agents []config.Agent) []config.Agent {
 }
 
 func TestMain(m *testing.M) {
+	scrubInheritedRigEnv()
 	gcHome, err := os.MkdirTemp("", "gascity-gc-home-*")
 	if err != nil {
 		panic(err)
