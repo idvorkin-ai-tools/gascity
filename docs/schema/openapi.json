@@ -2020,6 +2020,9 @@
             "$ref": "#/components/schemas/RequestFailedPayload"
           },
           {
+            "$ref": "#/components/schemas/RotatedPayload"
+          },
+          {
             "$ref": "#/components/schemas/SessionCreateSucceededPayload"
           },
           {
@@ -5448,6 +5451,30 @@
         },
         "type": "object"
       },
+      "RotatedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "prior_archive": {
+            "type": "string"
+          },
+          "prior_first_seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prior_last_seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prior_archive",
+          "prior_first_seq",
+          "prior_last_seq"
+        ],
+        "type": "object"
+      },
       "ScopeGroup": {
         "additionalProperties": false,
         "type": "object"
@@ -6657,6 +6684,7 @@
             "controller.stopped": "#/components/schemas/TypedEventStreamEnvelopeControllerStopped",
             "convoy.closed": "#/components/schemas/TypedEventStreamEnvelopeConvoyClosed",
             "convoy.created": "#/components/schemas/TypedEventStreamEnvelopeConvoyCreated",
+            "events.rotated": "#/components/schemas/TypedEventStreamEnvelopeEventsRotated",
             "extmsg.adapter_added": "#/components/schemas/TypedEventStreamEnvelopeExtmsgAdapterAdded",
             "extmsg.adapter_removed": "#/components/schemas/TypedEventStreamEnvelopeExtmsgAdapterRemoved",
             "extmsg.bound": "#/components/schemas/TypedEventStreamEnvelopeExtmsgBound",
@@ -6727,6 +6755,9 @@
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeConvoyCreated"
+          },
+          {
+            "$ref": "#/components/schemas/TypedEventStreamEnvelopeEventsRotated"
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeExtmsgAdapterAdded"
@@ -7367,7 +7398,8 @@
                 "extmsg.adapter_added",
                 "extmsg.adapter_removed",
                 "extmsg.inbound",
-                "extmsg.outbound"
+                "extmsg.outbound",
+                "events.rotated"
               ]
             },
             "type": "string"
@@ -7384,6 +7416,48 @@
           "payload"
         ],
         "title": "TypedEventStreamEnvelope custom",
+        "type": "object"
+      },
+      "TypedEventStreamEnvelopeEventsRotated": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/RotatedPayload"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "events.rotated",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload"
+        ],
+        "title": "TypedEventStreamEnvelope events.rotated",
         "type": "object"
       },
       "TypedEventStreamEnvelopeExtmsgAdapterAdded": {
@@ -8829,6 +8903,7 @@
             "controller.stopped": "#/components/schemas/TypedTaggedEventStreamEnvelopeControllerStopped",
             "convoy.closed": "#/components/schemas/TypedTaggedEventStreamEnvelopeConvoyClosed",
             "convoy.created": "#/components/schemas/TypedTaggedEventStreamEnvelopeConvoyCreated",
+            "events.rotated": "#/components/schemas/TypedTaggedEventStreamEnvelopeEventsRotated",
             "extmsg.adapter_added": "#/components/schemas/TypedTaggedEventStreamEnvelopeExtmsgAdapterAdded",
             "extmsg.adapter_removed": "#/components/schemas/TypedTaggedEventStreamEnvelopeExtmsgAdapterRemoved",
             "extmsg.bound": "#/components/schemas/TypedTaggedEventStreamEnvelopeExtmsgBound",
@@ -8899,6 +8974,9 @@
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeConvoyCreated"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeEventsRotated"
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeExtmsgAdapterAdded"
@@ -9586,7 +9664,8 @@
                 "extmsg.adapter_added",
                 "extmsg.adapter_removed",
                 "extmsg.inbound",
-                "extmsg.outbound"
+                "extmsg.outbound",
+                "events.rotated"
               ]
             },
             "type": "string"
@@ -9604,6 +9683,52 @@
           "city"
         ],
         "title": "TypedTaggedEventStreamEnvelope custom",
+        "type": "object"
+      },
+      "TypedTaggedEventStreamEnvelopeEventsRotated": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/RotatedPayload"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "events.rotated",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload",
+          "city"
+        ],
+        "title": "TypedTaggedEventStreamEnvelope events.rotated",
         "type": "object"
       },
       "TypedTaggedEventStreamEnvelopeExtmsgAdapterAdded": {
