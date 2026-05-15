@@ -9,12 +9,12 @@ func TestBuiltinProviders(t *testing.T) {
 	providers := BuiltinProviders()
 	order := BuiltinProviderOrder()
 
-	// Must have exactly 10 built-in providers.
-	if len(providers) != 10 {
-		t.Fatalf("len(BuiltinProviders()) = %d, want 10", len(providers))
+	// Must have exactly 11 built-in providers.
+	if len(providers) != 11 {
+		t.Fatalf("len(BuiltinProviders()) = %d, want 11", len(providers))
 	}
-	if len(order) != 10 {
-		t.Fatalf("len(BuiltinProviderOrder()) = %d, want 10", len(order))
+	if len(order) != 11 {
+		t.Fatalf("len(BuiltinProviderOrder()) = %d, want 11", len(order))
 	}
 
 	// Every entry in order must exist in providers.
@@ -145,8 +145,35 @@ func TestBuiltinProvidersCursor(t *testing.T) {
 	if p.Command != "cursor-agent" {
 		t.Errorf("Command = %q, want %q", p.Command, "cursor-agent")
 	}
-	if len(p.Args) != 1 || p.Args[0] != "-f" {
+	if !reflect.DeepEqual(p.Args, []string{"-f"}) {
 		t.Errorf("Args = %v, want [-f]", p.Args)
+	}
+	rp := &ResolvedProvider{
+		Command:           p.Command,
+		Args:              p.Args,
+		OptionsSchema:     p.OptionsSchema,
+		EffectiveDefaults: ComputeEffectiveDefaults(p.OptionsSchema, p.OptionDefaults, nil),
+	}
+	if got := rp.CommandString(); got != "cursor-agent -f" {
+		t.Errorf("CommandString() = %q, want %q", got, "cursor-agent -f")
+	}
+	if got := rp.ResolveDefaultArgs(); len(got) != 0 {
+		t.Errorf("ResolveDefaultArgs() = %v, want no MCP approval args by default", got)
+	}
+	mcpApproval := findOption(p.OptionsSchema, "mcp_approval")
+	if mcpApproval == nil {
+		t.Fatal("OptionsSchema missing mcp_approval")
+	}
+	if mcpApproval.Default != "prompt" {
+		t.Errorf("mcp_approval default = %q, want prompt", mcpApproval.Default)
+	}
+	approve := findChoice(mcpApproval.Choices, "approve")
+	if approve == nil || !reflect.DeepEqual(approve.FlagArgs, []string{"--approve-mcps"}) {
+		t.Fatalf("mcp_approval approve choice = %+v, want --approve-mcps", approve)
+	}
+	rp.EffectiveDefaults = ComputeEffectiveDefaults(p.OptionsSchema, map[string]string{"mcp_approval": "approve"}, nil)
+	if got := rp.ResolveDefaultArgs(); !reflect.DeepEqual(got, []string{"--approve-mcps"}) {
+		t.Errorf("ResolveDefaultArgs(opt-in) = %v, want [--approve-mcps]", got)
 	}
 	if p.PromptMode != "arg" {
 		t.Errorf("PromptMode = %q, want %q", p.PromptMode, "arg")
@@ -217,6 +244,25 @@ func TestBuiltinProvidersOpenCode(t *testing.T) {
 	}
 }
 
+func TestBuiltinProvidersKiro(t *testing.T) {
+	p := BuiltinProviders()["kiro"]
+	if p.Command != "kiro-cli" {
+		t.Errorf("Command = %q, want %q", p.Command, "kiro-cli")
+	}
+	if !reflect.DeepEqual(p.Args, []string{"chat", "--no-interactive", "--agent", "gascity", "--trust-all-tools"}) {
+		t.Errorf("Args = %v, want [chat --no-interactive --agent gascity --trust-all-tools]", p.Args)
+	}
+	if !reflect.DeepEqual(p.ACPArgs, []string{"acp", "--agent", "gascity"}) {
+		t.Errorf("ACPArgs = %v, want [acp --agent gascity]", p.ACPArgs)
+	}
+	if !derefBool(p.SupportsACP) {
+		t.Error("SupportsACP = false, want true")
+	}
+	if !derefBool(p.SupportsHooks) {
+		t.Error("SupportsHooks = false, want true")
+	}
+}
+
 // TestBuiltinProvidersOpenCodePromptModeRegression guards against switching
 // OpenCode back to argv-based prompt delivery. Gas City renders the startup
 // prompt as startup material, so OpenCode must not receive it as a bare
@@ -228,6 +274,64 @@ func TestBuiltinProvidersOpenCodePromptModeRegression(t *testing.T) {
 	}
 	if p.PromptMode != "flag" || p.PromptFlag != "--prompt" {
 		t.Fatalf("OpenCode prompt delivery = %q %q, want flag --prompt", p.PromptMode, p.PromptFlag)
+	}
+}
+
+// TestBuiltinProvidersResumeFlags asserts that every builtin provider known
+// to support session resume populates ResumeFlag and ResumeStyle. The flag
+// shapes are mirrored from gastown's reference table (mayor/rig/internal/
+// config/agents.go) which has been validated against each provider's CLI.
+// session_reconciler.resolveResumeCommand short-circuits when ResumeFlag is
+// empty, silently dropping the session-id and starting a fresh process —
+// regressing one of these to "" would re-introduce that bug for the
+// provider in question.
+func TestBuiltinProvidersResumeFlags(t *testing.T) {
+	tests := []struct {
+		provider    string
+		resumeFlag  string
+		resumeStyle string
+	}{
+		{"claude", "--resume", "flag"},
+		{"codex", "resume", "subcommand"},
+		{"gemini", "--resume", "flag"},
+		{"cursor", "--resume", "flag"},
+		{"copilot", "--resume", "flag"},
+		{"amp", "threads continue", "subcommand"},
+		{"opencode", "--session", "flag"},
+		{"auggie", "--resume", "flag"},
+	}
+	providers := BuiltinProviders()
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			p, ok := providers[tt.provider]
+			if !ok {
+				t.Fatalf("BuiltinProviders() missing %q", tt.provider)
+			}
+			if p.ResumeFlag != tt.resumeFlag {
+				t.Errorf("ResumeFlag = %q, want %q", p.ResumeFlag, tt.resumeFlag)
+			}
+			if p.ResumeStyle != tt.resumeStyle {
+				t.Errorf("ResumeStyle = %q, want %q", p.ResumeStyle, tt.resumeStyle)
+			}
+		})
+	}
+}
+
+// TestBuiltinProvidersSessionIDFlag pins which providers populate
+// SessionIDFlag. Claude is the only provider with a documented "start a new
+// session with this id" flag (--session-id). Codex exposes session ids only
+// through `codex resume <id>` (a resume path, not a fresh-start path), so it
+// stays empty — populating it would make resolveSessionCommand emit
+// `codex --session-id <key>` on first start, which codex rejects.
+func TestBuiltinProvidersSessionIDFlag(t *testing.T) {
+	providers := BuiltinProviders()
+	if got := providers["claude"].SessionIDFlag; got != "--session-id" {
+		t.Errorf("claude SessionIDFlag = %q, want --session-id", got)
+	}
+	for _, name := range []string{"codex", "gemini", "cursor", "copilot", "amp", "opencode", "auggie", "pi", "omp"} {
+		if got := providers[name].SessionIDFlag; got != "" {
+			t.Errorf("%s SessionIDFlag = %q, want empty (no documented start-with-id flag)", name, got)
+		}
 	}
 }
 
@@ -439,6 +543,28 @@ func TestProviderSessionCreateTransportUsesExplicitACPOverrides(t *testing.T) {
 				t.Fatalf("ProviderSessionCreateTransport() = %q, want %q", got, "acp")
 			}
 		})
+	}
+}
+
+func TestProviderSessionCreateTransportBuiltinKiroStaysOnCLIByDefault(t *testing.T) {
+	rp := &ResolvedProvider{
+		Name:        "kiro",
+		Command:     "kiro-cli",
+		Args:        []string{"chat", "--no-interactive", "--agent", "gascity", "--trust-all-tools"},
+		SupportsACP: true,
+		ACPArgs:     []string{"acp", "--agent", "gascity"},
+	}
+	if got := rp.ProviderSessionCreateTransport(); got != "" {
+		t.Fatalf("ProviderSessionCreateTransport() = %q, want empty default transport", got)
+	}
+	if got := ResolveSessionCreateTransport("", rp); got != "" {
+		t.Fatalf("ResolveSessionCreateTransport(empty) = %q, want empty default transport", got)
+	}
+	if got := ResolveSessionCreateTransport("acp", rp); got != "acp" {
+		t.Fatalf("ResolveSessionCreateTransport(acp) = %q, want acp", got)
+	}
+	if got := rp.ACPCommandString(); got != "kiro-cli acp --agent gascity" {
+		t.Fatalf("ACPCommandString() = %q, want explicit Kiro ACP command", got)
 	}
 }
 
