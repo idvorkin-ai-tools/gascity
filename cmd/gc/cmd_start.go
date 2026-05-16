@@ -324,6 +324,8 @@ func doStart(args []string, controllerMode bool, stdout, stderr io.Writer) int {
 }
 
 func doStartWithNameOverride(args []string, controllerMode bool, stdout, stderr io.Writer, nameOverride string) int {
+	// Strict mode is on by default; --no-strict disables it only for the legacy standalone controller.
+	strictMode = !noStrictMode
 	if controllerMode || dryRunMode {
 		return doStartStandalone(args, controllerMode, stdout, stderr)
 	}
@@ -362,6 +364,22 @@ func doStartWithNameOverride(args []string, controllerMode bool, stdout, stderr 
 	}
 	if status := checkDoltAuthorIdentity(cityPath); status.blocked() {
 		printDoltAuthorIdentityBlock(stderr, "gc start", status)
+		return 1
+	}
+	_, prov, err := loadStartCityConfig(cityPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc start: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	fatalWarnings, nonFatalWarnings := splitStrictConfigWarnings(prov.Warnings)
+	if strictMode && len(fatalWarnings) > 0 {
+		for _, w := range fatalWarnings {
+			fmt.Fprintf(stderr, "gc start: strict: %s\n", w) //nolint:errcheck // best-effort stderr
+		}
+		for _, w := range nonFatalWarnings {
+			fmt.Fprintf(stderr, "gc start: warning: %s\n", w) //nolint:errcheck // best-effort stderr
+		}
+		fmt.Fprintln(stderr, "gc start: use --no-strict to disable strict checking") //nolint:errcheck // best-effort stderr
 		return 1
 	}
 	if code := registerCityWithSupervisorNamed(cityPath, nameOverride, stdout, stderr, "gc start", true); code != 0 {
