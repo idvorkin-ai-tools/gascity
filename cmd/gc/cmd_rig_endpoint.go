@@ -61,7 +61,8 @@ This command owns the rig's canonical .beads/config.yaml topology state.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if jsonOutput {
-				if cmdRigSetEndpoint(args[0], opts, io.Discard, stderr) != 0 {
+				endpointState, code := cmdRigSetEndpointWithResult(args[0], opts, io.Discard, stderr)
+				if code != 0 {
 					return errExit
 				}
 				return writeManagementActionJSON(stdout, managementActionResult{
@@ -69,8 +70,8 @@ This command owns the rig's canonical .beads/config.yaml topology state.`,
 					Action:   "set-endpoint",
 					Name:     args[0],
 					Rig:      args[0],
-					DryRun:   opts.DryRun,
-					Endpoint: rigEndpointJSONFromOptions(opts),
+					DryRun:   managementBoolPtr(opts.DryRun),
+					Endpoint: rigEndpointJSONFromState(opts, endpointState),
 				})
 			}
 			if cmdRigSetEndpoint(args[0], opts, stdout, stderr) != 0 {
@@ -94,26 +95,37 @@ This command owns the rig's canonical .beads/config.yaml topology state.`,
 }
 
 func cmdRigSetEndpoint(rigName string, opts rigEndpointOptions, stdout, stderr io.Writer) int {
+	_, code := cmdRigSetEndpointWithResult(rigName, opts, stdout, stderr)
+	return code
+}
+
+func cmdRigSetEndpointWithResult(rigName string, opts rigEndpointOptions, stdout, stderr io.Writer) (contract.ConfigState, int) {
 	cityPath, err := resolveCity()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc rig set-endpoint: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
-	return doRigSetEndpoint(fsys.OSFS{}, cityPath, rigName, opts, stdout, stderr)
+	return doRigSetEndpointWithResult(fsys.OSFS{}, cityPath, rigName, opts, stdout, stderr)
 }
 
 //nolint:unparam // FS seam is intentional for command tests
 func doRigSetEndpoint(fs fsys.FS, cityPath, rigName string, opts rigEndpointOptions, stdout, stderr io.Writer) int {
+	_, code := doRigSetEndpointWithResult(fs, cityPath, rigName, opts, stdout, stderr)
+	return code
+}
+
+//nolint:unparam // FS seam is intentional for command tests
+func doRigSetEndpointWithResult(fs fsys.FS, cityPath, rigName string, opts rigEndpointOptions, stdout, stderr io.Writer) (contract.ConfigState, int) {
 	if err := validateRigEndpointOptions(opts); err != nil {
 		fmt.Fprintf(stderr, "gc rig set-endpoint: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 
 	tomlPath := filepath.Join(cityPath, "city.toml")
 	cfg, err := loadCityConfigForEditFS(fs, tomlPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc rig set-endpoint: loading config: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	persistCfg := *cfg
 	persistCfg.Rigs = append([]config.Rig(nil), cfg.Rigs...)
@@ -122,7 +134,7 @@ func doRigSetEndpoint(fs fsys.FS, cityPath, rigName string, opts rigEndpointOpti
 	rig, ok := rigByName(cfg, rigName)
 	if !ok {
 		fmt.Fprintln(stderr, rigNotFoundMsg("gc rig set-endpoint", rigName, cfg)) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	if strings.TrimSpace(rig.Path) == "" {
 		// Unbound rig: the downstream helpers join paths against rig.Path
@@ -131,40 +143,40 @@ func doRigSetEndpoint(fs fsys.FS, cityPath, rigName string, opts rigEndpointOpti
 		// relative `.beads/...` writes under the current working directory
 		// instead of erroring cleanly.
 		fmt.Fprintf(stderr, "gc rig set-endpoint: rig %q is declared but has no path binding — run `gc rig add <dir> --name %s` to bind it before setting its endpoint\n", rig.Name, rig.Name) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	if !scopeUsesManagedBdStoreContract(cityPath, rig.Path) {
 		fmt.Fprintln(stderr, "gc rig set-endpoint: only supported for bd-backed beads providers") //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 
 	cityState, err := resolveOwnerCityConfigState(cityPath, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc rig set-endpoint: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	currentState, err := resolveOwnerRigConfigState(cityPath, rig, cityState)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc rig set-endpoint: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 
 	targetState := requestedRigEndpointState(rig, currentState, cityState, opts)
 
 	if opts.Self && cityState.EndpointOrigin == contract.EndpointOriginManagedCity && !opts.Force {
 		fmt.Fprintf(stderr, "gc rig set-endpoint: --self conflicts with managed_city: the rig's .beads/dolt-server.port mirror will stop tracking the managed city Dolt and any rig-local Dolt must be started and managed independently of `gc start`. Re-run with --force to acknowledge.\n") //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 
 	if opts.DryRun {
 		printRigEndpointDryRun(stdout, rig, currentState, targetState)
-		return 0
+		return targetState, 0
 	}
 
 	if opts.Inherit && cityState.EndpointOrigin == contract.EndpointOriginManagedCity {
 		if _, err := readManagedRuntimePublishedPort(cityPath); err != nil {
 			fmt.Fprintf(stderr, "gc rig set-endpoint: managed city endpoint unavailable: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
+			return contract.ConfigState{}, 1
 		}
 	}
 
@@ -172,7 +184,7 @@ func doRigSetEndpoint(fs fsys.FS, cityPath, rigName string, opts rigEndpointOpti
 		if err := verifyRigExternalEndpoint(targetState, rig.Path, rig.Path); err != nil {
 			fmt.Fprintf(stderr, "gc rig set-endpoint: validate endpoint: %v\n", err)                                               //nolint:errcheck // best-effort stderr
 			fmt.Fprintf(stderr, "gc rig set-endpoint: rerun with --adopt-unverified to record this endpoint without validation\n") //nolint:errcheck // best-effort stderr
-			return 1
+			return contract.ConfigState{}, 1
 		}
 		targetState.EndpointStatus = contract.EndpointStatusVerified
 	}
@@ -184,27 +196,27 @@ func doRigSetEndpoint(fs fsys.FS, cityPath, rigName string, opts rigEndpointOpti
 	snapshots, err := snapshotRigEndpointFiles(fs, cityPath, rig.Path)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc rig set-endpoint: snapshot canonical files: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	if err := ensureCanonicalScopeMetadataIfPresent(fs, rig.Path); err != nil {
 		writeRigEndpointRollbackError(fs, stderr, snapshots, "canonicalizing metadata", err)
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	if err := ensureCanonicalScopeConfig(fs, rig.Path, targetState); err != nil {
 		writeRigEndpointRollbackError(fs, stderr, snapshots, "writing canonical config", err)
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	if err := syncRigEndpointCompatConfig(fs, cityPath, &persistCfg, rigName, targetState); err != nil {
 		writeRigEndpointRollbackError(fs, stderr, snapshots, "syncing compat city config", err)
-		return 1
+		return contract.ConfigState{}, 1
 	}
 	if err := syncRigManagedPortArtifact(cityPath, rig.Path, cityState, targetState); err != nil {
 		writeRigEndpointRollbackError(fs, stderr, snapshots, "syncing managed port artifact", err)
-		return 1
+		return contract.ConfigState{}, 1
 	}
 
 	printRigEndpointResult(stdout, rig, targetState)
-	return 0
+	return targetState, 0
 }
 
 func validateRigEndpointOptions(opts rigEndpointOptions) error {

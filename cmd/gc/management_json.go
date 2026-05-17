@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gastownhall/gascity/internal/beads/contract"
 	"github.com/gastownhall/gascity/internal/config"
-	"github.com/gastownhall/gascity/internal/fsys"
 )
 
 type managementActionResult struct {
@@ -22,7 +22,10 @@ type managementActionResult struct {
 	DefaultBranch string           `json:"default_branch,omitempty"`
 	Suspended     *bool            `json:"suspended,omitempty"`
 	State         string           `json:"state,omitempty"`
-	DryRun        bool             `json:"dry_run,omitempty"`
+	Retried       *bool            `json:"retried,omitempty"`
+	RetriedFrom   string           `json:"retried_from_wait,omitempty"`
+	ReadyWaitID   string           `json:"ready_wait_id,omitempty"`
+	DryRun        *bool            `json:"dry_run,omitempty"`
 	Endpoint      *rigEndpointJSON `json:"endpoint,omitempty"`
 }
 
@@ -64,29 +67,24 @@ func agentJSONName(input, dir string) (name, qualified string) {
 	return name, qualified
 }
 
-func rigAddJSONSummary(cityPath, rigPath, nameOverride, prefixOverride string) managementActionResult {
-	name := strings.TrimSpace(nameOverride)
+func agentJSONIdentity(cityPath, input string) (name, qualified string) {
+	return agentJSONName(resolveAgentForAPI(cityPath, input), "")
+}
+
+func rigAddJSONSummary(rigPath string, rig config.Rig) managementActionResult {
+	name := strings.TrimSpace(rig.Name)
 	if name == "" {
 		name = filepath.Base(rigPath)
 	}
 	result := managementActionResult{
-		Command: commandName("rig", "add"),
-		Action:  "add",
-		Name:    name,
-		Rig:     name,
-		Path:    rigPath,
-		Prefix:  strings.ToLower(strings.TrimSpace(prefixOverride)),
-	}
-	if cfg, err := loadCityConfigForEditFS(fsys.OSFS{}, filepath.Join(cityPath, "city.toml")); err == nil {
-		for _, rig := range cfg.Rigs {
-			if rig.Name != name {
-				continue
-			}
-			result.Prefix = rig.EffectivePrefix()
-			result.DefaultBranch = rig.EffectiveDefaultBranch()
-			result.Suspended = managementBoolPtr(rig.Suspended)
-			break
-		}
+		Command:       commandName("rig", "add"),
+		Action:        "add",
+		Name:          name,
+		Rig:           name,
+		Path:          rigPath,
+		Prefix:        rig.EffectivePrefix(),
+		DefaultBranch: rig.EffectiveDefaultBranch(),
+		Suspended:     managementBoolPtr(rig.Suspended),
 	}
 	if result.Prefix == "" {
 		result.Prefix = config.DeriveBeadsPrefix(name)
@@ -94,20 +92,22 @@ func rigAddJSONSummary(cityPath, rigPath, nameOverride, prefixOverride string) m
 	return result
 }
 
-func rigEndpointJSONFromOptions(opts rigEndpointOptions) *rigEndpointJSON {
-	endpoint := &rigEndpointJSON{AdoptUnverified: opts.AdoptUnverified}
+func rigEndpointJSONFromState(opts rigEndpointOptions, state contract.ConfigState) *rigEndpointJSON {
+	endpoint := &rigEndpointJSON{
+		AdoptUnverified: state.EndpointStatus == contract.EndpointStatusUnverified,
+	}
 	switch {
-	case opts.Inherit:
+	case opts.Inherit || state.EndpointOrigin == contract.EndpointOriginInheritedCity:
 		endpoint.Mode = "inherit"
 	case opts.Self:
 		endpoint.Mode = "self"
-		endpoint.Host = "127.0.0.1"
-		endpoint.Port = strings.TrimSpace(opts.Port)
-	case opts.External:
+	default:
 		endpoint.Mode = "external"
-		endpoint.Host = strings.TrimSpace(opts.Host)
-		endpoint.Port = strings.TrimSpace(opts.Port)
-		endpoint.User = strings.TrimSpace(opts.User)
+	}
+	if endpoint.Mode != "inherit" {
+		endpoint.Host = strings.TrimSpace(state.DoltHost)
+		endpoint.Port = strings.TrimSpace(state.DoltPort)
+		endpoint.User = strings.TrimSpace(state.DoltUser)
 	}
 	return endpoint
 }
