@@ -158,8 +158,9 @@ type CityRuntimeParams struct {
 }
 
 var (
-	cityRuntimeStartBeadsLifecycle       = startBeadsLifecycle
-	cityRuntimeReloadLifecycleRetryDelay = time.Second
+	cityRuntimeStartBeadsLifecycle           = startBeadsLifecycle
+	cityRuntimeReloadLifecycleRetryDelay     = time.Second
+	cityRuntimeMigrateLocalLifecycleMetadata = migrateLocalLifecycleMetadataOnce
 )
 
 const cityRuntimeReloadLifecycleRetryLimit = 2
@@ -350,6 +351,8 @@ func (cr *CityRuntime) run(ctx context.Context) {
 
 	// Record bead store health metric.
 	telemetry.RecordBeadStoreHealth(context.Background(), cr.cityName, cr.cityBeadStore() != nil)
+
+	cr.migrateLocalLifecycleMetadata()
 
 	// Initialize bead-driven drain tracker when bead store is available.
 	if cr.cityBeadStore() != nil && cr.tomlPath != "" {
@@ -2074,6 +2077,24 @@ func (cr *CityRuntime) cityBeadStore() beads.Store {
 		return cr.cs.CityBeadStore()
 	}
 	return cr.standaloneCityStore
+}
+
+func (cr *CityRuntime) migrateLocalLifecycleMetadata() {
+	store := cr.cityBeadStore()
+	if store == nil {
+		return
+	}
+	stderr := cr.stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if err := cityRuntimeMigrateLocalLifecycleMetadata(store, stderr); err != nil {
+		logPrefix := cr.logPrefix
+		if logPrefix == "" {
+			logPrefix = "gc start"
+		}
+		fmt.Fprintf(stderr, "%s: local metadata migration: %v\n", logPrefix, err) //nolint:errcheck
+	}
 }
 
 func (cr *CityRuntime) rigBeadStores() map[string]beads.Store {

@@ -298,6 +298,16 @@ func (s *NativeDoltStore) GetLocalString(beadID, key string) (string, bool, erro
 	return value, true, nil
 }
 
+// ConfigGet retrieves a beadslib database configuration value.
+func (s *NativeDoltStore) ConfigGet(key string) (string, error) {
+	return s.storage.GetConfig(context.Background(), key)
+}
+
+// ConfigSet writes a beadslib database configuration value.
+func (s *NativeDoltStore) ConfigSet(key, value string) error {
+	return s.storage.SetConfig(context.Background(), key, value)
+}
+
 // Delete permanently removes a bead from the upstream beads storage layer.
 func (s *NativeDoltStore) Delete(id string) error {
 	return s.storage.DeleteIssue(context.Background(), id)

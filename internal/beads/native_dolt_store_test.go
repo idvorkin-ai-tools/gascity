@@ -421,6 +421,50 @@ func TestNativeDoltStoreLocalMetadataNamespaceAvoidsBeadslibKeys(t *testing.T) {
 	}
 }
 
+func TestNativeDoltStoreConfigGetDelegatesToUpstreamStorage(t *testing.T) {
+	var capturedKey string
+	storage := &nativeDoltStorageSpy{
+		getConfig: func(_ context.Context, key string) (string, error) {
+			capturedKey = key
+			return "v1", nil
+		},
+	}
+	store := newNativeDoltStoreForTest(storage)
+
+	got, err := store.ConfigGet("gc:local-metadata-migrated")
+	if err != nil {
+		t.Fatalf("ConfigGet: %v", err)
+	}
+	if capturedKey != "gc:local-metadata-migrated" {
+		t.Fatalf("config key = %q, want marker key", capturedKey)
+	}
+	if got != "v1" {
+		t.Fatalf("config value = %q, want v1", got)
+	}
+}
+
+func TestNativeDoltStoreConfigSetDelegatesToUpstreamStorage(t *testing.T) {
+	var capturedKey, capturedValue string
+	storage := &nativeDoltStorageSpy{
+		setConfig: func(_ context.Context, key, value string) error {
+			capturedKey = key
+			capturedValue = value
+			return nil
+		},
+	}
+	store := newNativeDoltStoreForTest(storage)
+
+	if err := store.ConfigSet("gc:local-metadata-migrated", "v1"); err != nil {
+		t.Fatalf("ConfigSet: %v", err)
+	}
+	if capturedKey != "gc:local-metadata-migrated" {
+		t.Fatalf("config key = %q, want marker key", capturedKey)
+	}
+	if capturedValue != "v1" {
+		t.Fatalf("config value = %q, want v1", capturedValue)
+	}
+}
+
 type nativeDoltStorageSpy struct {
 	beadslib.Storage
 	createIssue      func(context.Context, *beadslib.Issue, string) error
@@ -429,6 +473,8 @@ type nativeDoltStorageSpy struct {
 	runInTransaction func(context.Context, string, func(beadslib.Transaction) error) error
 	setLocalMetadata func(context.Context, string, string) error
 	getLocalMetadata func(context.Context, string) (string, error)
+	getConfig        func(context.Context, string) (string, error)
+	setConfig        func(context.Context, string, string) error
 }
 
 func (s *nativeDoltStorageSpy) CreateIssue(ctx context.Context, issue *beadslib.Issue, actor string) error {
@@ -453,6 +499,14 @@ func (s *nativeDoltStorageSpy) SetLocalMetadata(ctx context.Context, key, value 
 
 func (s *nativeDoltStorageSpy) GetLocalMetadata(ctx context.Context, key string) (string, error) {
 	return s.getLocalMetadata(ctx, key)
+}
+
+func (s *nativeDoltStorageSpy) GetConfig(ctx context.Context, key string) (string, error) {
+	return s.getConfig(ctx, key)
+}
+
+func (s *nativeDoltStorageSpy) SetConfig(ctx context.Context, key, value string) error {
+	return s.setConfig(ctx, key, value)
 }
 
 type nativeDoltTransactionSpy struct {
