@@ -1181,7 +1181,7 @@ func cityRuntimeProcessEnvWithError(cityPath string) ([]string, error) {
 			}
 		}
 		keys := execProjectedBackendEnvKeys()
-		keys = append(keys, "BEADS_DOLT_AUTO_START")
+		keys = append(keys, "BEADS_DOLT_AUTO_START", "BD_DOLT_SYNC_CLI_REMOTES", "BEADS_DOLT_SYNC_CLI_REMOTES")
 		for _, key := range keys {
 			if value, ok := source[key]; ok {
 				overrides[key] = value
@@ -1270,11 +1270,13 @@ func mergeRuntimeEnv(environ []string, overrides map[string]string) []string {
 		"BEADS_DOLT_SERVER_HOST",
 		"BEADS_DOLT_SERVER_PORT",
 		"BEADS_DOLT_SERVER_USER",
+		"BEADS_DOLT_SYNC_CLI_REMOTES",
 		"BEADS_POSTGRES_DATABASE",
 		"BEADS_POSTGRES_HOST",
 		"BEADS_POSTGRES_PASSWORD",
 		"BEADS_POSTGRES_PORT",
 		"BEADS_POSTGRES_USER",
+		"BD_DOLT_SYNC_CLI_REMOTES",
 		"GC_CITY",
 		"GC_CITY_ROOT", // kept for stripping: no code emits this anymore, but inherited values must be cleaned
 		"GC_CITY_PATH",
