@@ -1661,7 +1661,7 @@ func (s *BdStore) Children(parentID string, opts ...QueryOpt) ([]Bead, error) {
 // Ready returns open ready beads via bd ready.
 func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	q := readyQueryFromArgs(query)
-	args := []string{"ready", "--json"}
+	args := []string{"ready", "--json", "--include-ephemeral"}
 	if q.Assignee != "" {
 		args = append(args, "--assignee", q.Assignee)
 	}
@@ -1679,9 +1679,6 @@ func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	for i := range issues {
 		bead := issues[i].toBead()
 		if IsReadyExcludedType(bead.Type) {
-			continue
-		}
-		if bead.Ephemeral {
 			continue
 		}
 		if q.Assignee != "" && bead.Assignee != q.Assignee {
