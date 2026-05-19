@@ -1,6 +1,6 @@
 # Active Workstream Coordination
 
-Last updated: 2026-05-18 17:18 PT by Grace
+Last updated: 2026-05-18 17:36 PT by Grace
 
 This is a temporary cross-agent coordination channel, not product documentation.
 Do not merge this file into public docs unless we explicitly promote it.
@@ -42,9 +42,9 @@ needed owner in `Reason`.
   before Cleo freezes registry command schemas/tests.
 - `yellow`: Registry-gc-pack needs Mabel to flag any #2126 constraints that
   affect `gc import`, legacy `gc pack fetch/list`, or PackV2 import fields.
-- `green`: gc4gc / Operational Substrate handoff is published; stable gc4gc is
-  consumable for artifact inspection and JSON audit prep without Grace
-  mediating.
+- `green`: gc4gc / Operational Substrate is portable through
+  `https://github.com/donbox/gc4gc`; stable and producer/dev branches are
+  published separately.
 - `green`: Cleo's dirty registry work has been pushed to a preservation /
   workstream branch; no meaningful registry local-only state is expected.
 
@@ -678,7 +678,7 @@ Coordination branch: `codex/workstream-coordination`
 
 PR: none expected
 
-Stable consumer repo: `/Users/dbox/repos/gc/gc4gc` on `master`
+Stable consumer repo: `https://github.com/donbox/gc4gc` on `master`
 
 Producer/dev repo: `/Users/dbox/repos/gc/gc4gc-grace` on
 `codex/gc4gc-producer-dev`
@@ -694,14 +694,20 @@ Stable consumer state:
 - `/Users/dbox/repos/gc/gc4gc` is the stable consumer-facing copy.
 - Branch: `master`.
 - Latest known stable commit: `8d992e5 Point gc4gc at agent runtime checkout`.
-- The repo is local-only in current state; it has no `origin` remote.
+- Remote: `https://github.com/donbox/gc4gc.git`.
 - Mabel/Codex may consume stable artifacts here without Grace mediating.
 
 Producer/dev state:
 
 - `/Users/dbox/repos/gc/gc4gc-grace` is Grace's producer worktree.
 - Branch: `codex/gc4gc-producer-dev`.
-- It may contain unpromoted or temporarily unstable producer changes.
+- Remote branch for current clean producer/dev baseline:
+  `codex/gc4gc-producer-dev` at commit `52e6ec3`.
+- Remote archival snapshot of Grace's old exact dev worktree:
+  `codex/gc4gc-producer-snapshot-20260518` at commit `e38b97b`.
+- The snapshot branch preserves the old dirty/untracked producer state as Git
+  history. Prefer the clean `codex/gc4gc-producer-dev` branch for new work.
+- Producer/dev may contain unpromoted or temporarily unstable producer changes.
 - Do not ask Mabel/Codex to consume dev-worktree runs unless explicitly
   requested.
 
@@ -799,8 +805,8 @@ inspection and JSON audit prep. No immediate human decision is required.
   manual or bead-per-shard routing until another canary proves the lane.
 - `yellow`: gc4gc may surface product friction for Cleo's registry/gc pack work
   but should not directly alter implementation branches.
-- `yellow`: stable gc4gc is local-only unless/until a remote repo is created or
-  this changes intentionally.
+- `green`: stable gc4gc is no longer local-only; it is pushed to
+  `https://github.com/donbox/gc4gc`.
 
 Product gaps discovered while using gc4gc:
 
@@ -842,10 +848,11 @@ New Machine Bootstrap:
 
 Local-only state:
 
-- Stable gc4gc is currently local-only at `/Users/dbox/repos/gc/gc4gc`.
-- The stable gc4gc repo has no `origin` remote in the current setup.
-- Grace's producer/dev worktree is also local-only operational state unless
-  separately pushed or promoted.
+- Stable gc4gc is no longer local-only. Clone it from
+  `https://github.com/donbox/gc4gc.git`.
+- Grace's producer/dev state is also represented remotely:
+  - clean producer/dev branch: `codex/gc4gc-producer-dev`
+  - archival snapshot branch: `codex/gc4gc-producer-snapshot-20260518`
 - Runtime artifacts under `.runtime/` are local run evidence, not durable GitHub
   records unless an agent explicitly summarizes them into issues, PR comments,
   or coordination docs.
@@ -854,6 +861,39 @@ Local-only state:
 - The bundle includes stable and Grace-dev Git bundles plus overlays for
   `.runtime/`, `.beads/`, and uncommitted/untracked producer state.
 - The bundle intentionally excludes `.gc/`; Gas City owns that opaque state.
+- The bundle is fallback evidence only now that the repo/branches are pushed.
+- `.runtime/` is not required for bootstrap, but it is useful canary evidence.
+
+Clone/bootstrap commands:
+
+```sh
+mkdir -p /Users/dbox/repos/gc
+cd /Users/dbox/repos/gc
+
+git clone https://github.com/gastownhall/gascity.git gascity-agent-runtime
+cd gascity-agent-runtime
+git fetch origin codex/gc4gc-agent-runtime-dolt-leak
+git switch codex/gc4gc-agent-runtime-dolt-leak
+
+cd /Users/dbox/repos/gc
+git clone https://github.com/donbox/gc4gc.git gc4gc
+cd gc4gc
+git switch master
+
+cd /Users/dbox/repos/gc
+git clone https://github.com/donbox/gc4gc.git gc4gc-grace
+cd gc4gc-grace
+git switch codex/gc4gc-producer-dev
+```
+
+Optional archival snapshot checkout:
+
+```sh
+cd /Users/dbox/repos/gc
+git clone https://github.com/donbox/gc4gc.git gc4gc-grace-snapshot-20260518
+cd gc4gc-grace-snapshot-20260518
+git switch codex/gc4gc-producer-snapshot-20260518
+```
 
 Validation commands:
 
@@ -871,10 +911,18 @@ assets/scripts/gc-json.sh formula show gc-json-audit
 printf 'gc4gc fixed-runtime verification\n' \
   | assets/scripts/gc-json.sh sling --json --dry-run --no-convoy --stdin json-auditor-1
 
+git -C /Users/dbox/repos/gc/gc4gc-grace status --short --branch
+git -C /Users/dbox/repos/gc/gc4gc-grace log -3 --oneline
+```
+
+If the fallback bundle is restored, also validate preserved runtime evidence:
+
+```sh
+cd /Users/dbox/repos/gc/gc4gc
 assets/scripts/validate-run.sh .runtime/runs/20260515-005739-pack-pr-review-2117
 find .runtime/json-audit/20260516 -maxdepth 3 -type f -name report.md -print
 ```
 
 ### Last Updated
 
-2026-05-18 17:18 PT by Grace
+2026-05-18 17:36 PT by Grace
