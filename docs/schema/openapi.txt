@@ -2695,15 +2695,11 @@
               "array",
               "null"
             ]
-          },
-          "version": {
-            "type": "string"
           }
         },
         "required": [
           "name",
           "description",
-          "version",
           "var_defs",
           "steps",
           "deps",
@@ -3010,15 +3006,11 @@
               "array",
               "null"
             ]
-          },
-          "version": {
-            "type": "string"
           }
         },
         "required": [
           "name",
           "description",
-          "version",
           "var_defs",
           "run_count",
           "recent_runs"

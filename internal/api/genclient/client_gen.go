@@ -1201,7 +1201,6 @@ type FormulaDetailResponse struct {
 	Preview     FormulaPreviewResponse        `json:"preview"`
 	Steps       *[]FormulaStepResponse        `json:"steps"`
 	VarDefs     *[]FormulaVarDefResponse      `json:"var_defs"`
-	Version     string                        `json:"version"`
 }
 
 // FormulaFeedBody defines model for FormulaFeedBody.
@@ -1295,7 +1294,6 @@ type FormulaSummaryResponse struct {
 	RecentRuns  *[]FormulaRecentRunResponse `json:"recent_runs"`
 	RunCount    int64                       `json:"run_count"`
 	VarDefs     *[]FormulaVarDefResponse    `json:"var_defs"`
-	Version     string                      `json:"version"`
 }
 
 // FormulaVarDefResponse defines model for FormulaVarDefResponse.

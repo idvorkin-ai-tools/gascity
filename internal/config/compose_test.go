@@ -45,6 +45,39 @@ name = "mayor"
 	}
 }
 
+func TestLoadWithIncludesDefaultsFormulaV2Enabled(t *testing.T) {
+	fs := fsys.NewFake()
+	fs.Files["/city/city.toml"] = []byte(`
+[workspace]
+name = "test"
+`)
+	cfg, _, err := LoadWithIncludes(fs, "/city/city.toml")
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+	if !cfg.Daemon.FormulaV2 {
+		t.Fatal("Daemon.FormulaV2 = false, want true when formula_v2 is omitted")
+	}
+}
+
+func TestLoadWithIncludesPreservesExplicitFormulaV2False(t *testing.T) {
+	fs := fsys.NewFake()
+	fs.Files["/city/city.toml"] = []byte(`
+[workspace]
+name = "test"
+
+[daemon]
+formula_v2 = false
+`)
+	cfg, _, err := LoadWithIncludes(fs, "/city/city.toml")
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+	if cfg.Daemon.FormulaV2 {
+		t.Fatal("Daemon.FormulaV2 = true, want explicit false")
+	}
+}
+
 func TestLoadWithIncludes_InvalidProviderChainFailsLoad(t *testing.T) {
 	fs := fsys.NewFake()
 	fs.Files["/city/city.toml"] = []byte(`
@@ -1317,12 +1350,13 @@ session_setup_script = "scripts/theme.sh"
 	if err != nil {
 		t.Fatalf("LoadWithIncludes: %v", err)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(cfg.Agents) = %d, want 1", len(cfg.Agents))
+	agents := explicitAgents(cfg.Agents)
+	if len(agents) != 1 {
+		t.Fatalf("len(explicit Agents) = %d, want 1", len(agents))
 	}
 	want := filepath.Join(dir, "fragments/scripts/theme.sh")
-	if cfg.Agents[0].SessionSetupScript != want {
-		t.Fatalf("SessionSetupScript = %q, want %q", cfg.Agents[0].SessionSetupScript, want)
+	if agents[0].SessionSetupScript != want {
+		t.Fatalf("SessionSetupScript = %q, want %q", agents[0].SessionSetupScript, want)
 	}
 }
 
@@ -1414,12 +1448,13 @@ scope = "city"
 	if err != nil {
 		t.Fatalf("LoadWithIncludes: %v", err)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(cfg.Agents) = %d, want 1", len(cfg.Agents))
+	agents := explicitAgents(cfg.Agents)
+	if len(agents) != 1 {
+		t.Fatalf("len(explicit Agents) = %d, want 1", len(agents))
 	}
 	want := filepath.Join(dir, "scripts/local.sh")
-	if cfg.Agents[0].SessionSetupScript != want {
-		t.Fatalf("SessionSetupScript = %q, want %q", cfg.Agents[0].SessionSetupScript, want)
+	if agents[0].SessionSetupScript != want {
+		t.Fatalf("SessionSetupScript = %q, want %q", agents[0].SessionSetupScript, want)
 	}
 }
 
@@ -1570,12 +1605,13 @@ scope = "rig"
 	if err != nil {
 		t.Fatalf("LoadWithIncludes: %v", err)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(cfg.Agents) = %d, want 1", len(cfg.Agents))
+	agents := explicitAgents(cfg.Agents)
+	if len(agents) != 1 {
+		t.Fatalf("len(explicit Agents) = %d, want 1", len(agents))
 	}
 	want := filepath.Join(dir, "scripts/rig-local.sh")
-	if cfg.Agents[0].SessionSetupScript != want {
-		t.Fatalf("SessionSetupScript = %q, want %q", cfg.Agents[0].SessionSetupScript, want)
+	if agents[0].SessionSetupScript != want {
+		t.Fatalf("SessionSetupScript = %q, want %q", agents[0].SessionSetupScript, want)
 	}
 }
 
@@ -1622,12 +1658,13 @@ scope = "rig"
 	if err != nil {
 		t.Fatalf("LoadWithIncludes: %v", err)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(cfg.Agents) = %d, want 1", len(cfg.Agents))
+	agents := explicitAgents(cfg.Agents)
+	if len(agents) != 1 {
+		t.Fatalf("len(explicit Agents) = %d, want 1", len(agents))
 	}
 	want := filepath.Join(dir, "fragments/scripts/fragment-local.sh")
-	if cfg.Agents[0].SessionSetupScript != want {
-		t.Fatalf("SessionSetupScript = %q, want %q", cfg.Agents[0].SessionSetupScript, want)
+	if agents[0].SessionSetupScript != want {
+		t.Fatalf("SessionSetupScript = %q, want %q", agents[0].SessionSetupScript, want)
 	}
 }
 
