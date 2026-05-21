@@ -5,13 +5,54 @@ description: Bring a reusable pack into your city, keep it cached locally, and c
 
 # Reusing and Customizing Packs
 
-Cities are where the work happens in Gas City. Packs define what a city can do.
+Cities are the place where the work happens in Gas City. Packs define what a
+city can do and how it does it.
 
-A pack is a named bundle of city-building definitions: agents, named sessions,
+A pack is a named collections of city-building definitions: agents, named sessions,
 formulas, skills, commands, defaults, and the files those definitions need at
-runtime. Every city has at least one pack: the city's root pack. When your city
-starts, Gas City resolves the root pack plus every pack it imports into one
-effective city configuration.
+runtime. Cities are built from one or more packs.
+
+Every city has at least one pack: the city's root pack. The root pack is the
+same directory your `city.toml` file is in. The things your pack can do are
+stored in the `pack.toml` file that sits next to `city.toml`, plus files in a
+few well-known directories.
+
+A city is implicitly built on its root pack. Packs themselves, including the
+root pack, can be built on other packs. To add another pack, use `gc pack add`.
+
+For example, this command imports the `gascity` pack into your city under the
+local name `gascity`:
+
+```bash
+#!/usr/bin/env bash
+# Add the registry pack under the local import binding "gascity".
+gc pack add main:gascity --name gascity
+```
+
+That command writes an import to `pack.toml`:
+
+```toml
+[imports.gascity]
+source = "https://packages.example/main/gascity"
+```
+
+When Gas City loads this pack, it also loads the imported pack. If `gascity`
+exports an agent named `reviewer`, the city can use that agent through the
+import binding:
+
+```bash
+#!/usr/bin/env bash
+# Send work to the reviewer agent from the imported gascity pack.
+gc sling gascity/reviewer <bead-id>
+```
+
+The part before the slash is the pack scope. The root city pack owns unscoped
+names such as `reviewer`. Imported packs are addressed through their binding,
+such as `gascity/reviewer` or `security/reviewer`. If two imported packs expose
+something with the same unqualified name, the scope disambiguates them.
+
+When your city starts, Gas City resolves the root pack plus every pack it
+imports into one effective city configuration.
 
 That means pack reuse is not a separate mode from normal city configuration. It
 is the way Gas City lets one city or pack build on work that another pack has
@@ -34,7 +75,10 @@ pack structure.
 gascity/
   pack.toml
   agents/
+  commands/
   formulas/
+  mcps/
+  orders/
   skills/
   assets/
 ```
@@ -45,8 +89,9 @@ Conceptually, a pack has three parts:
   expectations. Metadata lives in `pack.toml`.
 - **Definitions** are the named things other users can run or build on, such as
   agents, named sessions, formulas, skills, commands, and MCP-related
-  configuration. Definitions live in `pack.toml` or in well-known definition
-  directories.
+  configuration. Imports, exports, defaults, patches, and pack metadata live in
+  `pack.toml`. Definition bodies such as agents, formulas, skills, commands,
+  orders, and MCP configuration live in well-known definition directories.
 - **Assets** are private files those definitions need, such as prompt templates
   or setup scripts. Assets live under `assets/` and are opaque to Gas City
   except when a definition points at them.
@@ -79,28 +124,10 @@ versioning section below explains how to keep that promise stable while still
 allowing updates.
 
 ## Importing Packs
-// must be, not should be. We are getting rid of implicit imports and will require any pack you depend on to be explicitly imported.
-Every pack you use should be represented by an explicit import. In day-to-day
-use, you usually create that import with `gc pack add` rather than by editing
-TOML directly.
 
-Before the registry enters the story, it helps to see the shape Gas City is
-trying to create:
-
-```toml
-[imports.gascity]
-source = "https://packages.example/main/gascity"
-```
-
-The table name, `imports.gascity`, is the local binding. It gives the imported
-pack a name inside the importing pack. If the imported pack exposes an agent
-named `reviewer`, the unqualified name inside that pack is `reviewer`; after you
-import the pack as `gascity`, your city refers to it as `gascity/reviewer`.
-
-That qualified name is what keeps two packs from accidentally claiming the same
-top-level word. One pack can expose `gascity/reviewer`, another can expose
-`security/reviewer`, and a reader can tell which product surface each agent came
-from.
+Every pack you depend on must be represented by an explicit import. In
+day-to-day use, create that import with `gc pack add` rather than by editing TOML
+directly.
 
 Local packs use the same `source` field. They usually omit `version` because
 there is no registry or remote release to resolve:
