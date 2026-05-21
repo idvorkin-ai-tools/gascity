@@ -61,7 +61,10 @@ func standaloneControllerCityName(cfg *config.City, cityPath string) string {
 func resolveAgentForAPI(cityPath, name string) string {
 	cfg, err := loadCityConfig(cityPath, io.Discard)
 	if err != nil {
-		return name
+		cfg, err = loadCityConfigForEditFS(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
+		if err != nil {
+			return name
+		}
 	}
 	resolved, ok := resolveAgentIdentity(cfg, name, currentRigContext(cfg))
 	if !ok {
