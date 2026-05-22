@@ -108,7 +108,7 @@ func inspectBuiltinPackRegistryMigration(cityPath string) (builtinPackRegistryIs
 	if err != nil {
 		return builtinPackRegistryIssues{}, err
 	}
-	packCfg, _, err := loadPackConfigForBuiltinPackMigration(cityPath)
+	packCfg, packExists, err := loadPackConfigForBuiltinPackMigration(cityPath)
 	if err != nil {
 		return builtinPackRegistryIssues{}, err
 	}
@@ -124,6 +124,9 @@ func inspectBuiltinPackRegistryMigration(cityPath string) (builtinPackRegistryIs
 	sort.Strings(issues.legacyRefs)
 
 	present := bundledImportNames(cityCfg, packCfg)
+	if !packExists && len(present) == 0 && len(issues.legacyRefs) == 0 {
+		return issues, nil
+	}
 	required := requiredDefaultBuiltinImportNames(cityPath, cityCfg, present["gastown"])
 	for _, name := range required {
 		if !present[name] {

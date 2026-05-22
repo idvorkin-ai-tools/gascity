@@ -530,11 +530,10 @@ func (p *Provider) Thread(id string) ([]mail.Message, error) {
 	default:
 		return nil, fmt.Errorf("beadmail thread: resolving %q: %w", id, err)
 	}
-	bs, err := p.store.List(beads.ListQuery{
-		Label:    "thread:" + threadID,
-		Type:     "message",
-		Sort:     beads.SortCreatedAsc,
-		TierMode: beads.TierBoth,
+	bs, err := beads.HandlesFor(p.store).Live.List(beads.ListQuery{
+		Label: "thread:" + threadID,
+		Type:  "message",
+		Sort:  beads.SortCreatedAsc,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("beadmail thread: %w", err)
