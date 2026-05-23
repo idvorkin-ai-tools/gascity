@@ -3,35 +3,29 @@ package beads
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
 
 const (
-	hqDefaultCheckpointEvery = 1000
-	hqWALFileName            = "wal.jsonl"
-	hqCheckpointFileName     = "checkpoint.json"
-	hqExpiresAtMetadataKey   = "expires_at"
-	hqExpiresAtMetadataAlt   = "gc.expires_at"
+	hqExpiresAtMetadataKey = "expires_at"
+	hqExpiresAtMetadataAlt = "gc.expires_at"
 )
 
-// HQStore is a dormant, WAL-backed in-process Store implementation for the
-// coordination-store migration experiments. It is not wired into live city
+// HQStore is a dormant, snapshot-backed in-process Store implementation for the
+// coordination-store migration experiments. Writes mutate an in-memory indexed
+// core with no per-write fsync; durability comes from an async background
+// snapshotter that periodically serializes the whole store to a gzip-compressed
+// JSONL file and publishes it via atomic rename. It is not wired into live city
 // storage; callers must opt in by opening it directly.
 type HQStore struct {
-	mu      sync.RWMutex
-	writeMu sync.Mutex
+	mu sync.RWMutex
 
-	dir             string
-	prefix          string
-	seq             int
-	checkpointEvery int
-	writesSinceCP   int
+	dir    string
+	prefix string
+	seq    int
 
-	wal    *hqWAL
 	closed bool
-	walOn  bool
 
 	main      map[string]Bead
 	wisps     map[string]Bead
@@ -44,29 +38,23 @@ type HQStore struct {
 	ttlInterval time.Duration
 	ttlStop     chan struct{}
 	ttlDone     chan struct{}
+
+	snapshotInterval time.Duration
+	snapStop         chan struct{}
+	snapDone         chan struct{}
+	snapWriteMu      sync.Mutex // serializes concurrent snapshot writers
+	snapErrMu        sync.Mutex
+	snapErr          error
 }
 
 type hqStoreOptions struct {
-	prefix          string
-	checkpointEvery int
-	ttlInterval     time.Duration
-	syncWrites      bool
-	walEnabled      bool
+	prefix           string
+	ttlInterval      time.Duration
+	snapshotInterval time.Duration
 }
 
 // HQStoreOption customizes OpenHQStore.
 type HQStoreOption func(*hqStoreOptions)
-
-// WithHQStoreCheckpointEvery sets how many successful writes happen between
-// automatic checkpoints. A value of 0 disables automatic checkpointing.
-func WithHQStoreCheckpointEvery(n int) HQStoreOption {
-	return func(o *hqStoreOptions) {
-		if n < 0 {
-			n = 0
-		}
-		o.checkpointEvery = n
-	}
-}
 
 // WithHQStoreTTLInterval starts a background TTL sweeper at the given interval.
 // A non-positive interval leaves TTL purge explicit via PurgeExpired.
@@ -85,29 +73,21 @@ func WithHQStoreIDPrefix(prefix string) HQStoreOption {
 	}
 }
 
-// WithHQStoreSyncWrites controls whether each WAL append calls fsync before
-// the write returns. The default is true.
-func WithHQStoreSyncWrites(syncWrites bool) HQStoreOption {
+// WithHQStoreSnapshotInterval sets the background snapshot cadence. A
+// non-positive interval disables periodic snapshots; Shutdown still flushes a
+// final snapshot so an orderly close is always durable.
+func WithHQStoreSnapshotInterval(d time.Duration) HQStoreOption {
 	return func(o *hqStoreOptions) {
-		o.syncWrites = syncWrites
+		o.snapshotInterval = d
 	}
 }
 
-// WithHQStoreWAL controls whether writes are appended to the JSONL WAL. The
-// default is true; disabling WAL is intended for isolated hot-core benchmarks.
-func WithHQStoreWAL(enabled bool) HQStoreOption {
-	return func(o *hqStoreOptions) {
-		o.walEnabled = enabled
-	}
-}
-
-// OpenHQStore opens or creates a dormant HQStore rooted at dir.
+// OpenHQStore opens or creates a dormant HQStore rooted at dir. If a snapshot
+// is present it is loaded to rebuild in-memory state and indexes.
 func OpenHQStore(dir string, opts ...HQStoreOption) (*HQStore, error) {
 	cfg := hqStoreOptions{
-		prefix:          "hq",
-		checkpointEvery: hqDefaultCheckpointEvery,
-		syncWrites:      true,
-		walEnabled:      true,
+		prefix:           "hq",
+		snapshotInterval: hqDefaultSnapshotInterval,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -117,49 +97,39 @@ func OpenHQStore(dir string, opts ...HQStoreOption) (*HQStore, error) {
 	}
 
 	store := &HQStore{
-		dir:             dir,
-		prefix:          cfg.prefix,
-		checkpointEvery: cfg.checkpointEvery,
-		ttlInterval:     cfg.ttlInterval,
-		walOn:           cfg.walEnabled,
+		dir:              dir,
+		prefix:           cfg.prefix,
+		ttlInterval:      cfg.ttlInterval,
+		snapshotInterval: cfg.snapshotInterval,
 	}
 	store.resetCoreLocked()
 
-	if err := store.loadCheckpoint(); err != nil {
+	if err := store.loadSnapshot(); err != nil {
 		return nil, err
 	}
-	if cfg.walEnabled {
-		if err := store.replayWAL(); err != nil {
-			return nil, err
-		}
-		wal, err := openHQWAL(filepath.Join(dir, hqWALFileName), cfg.syncWrites)
-		if err != nil {
-			return nil, err
-		}
-		store.wal = wal
-	}
+	store.startSnapshotter()
 	store.startTTLSweeper()
 	return store, nil
 }
 
-// Shutdown releases the WAL file and stops the optional TTL sweeper. It is
-// idempotent.
+// Shutdown stops the background goroutines, flushes a final snapshot, and marks
+// the store closed. It is idempotent.
 func (s *HQStore) Shutdown() error {
 	s.stopTTLSweeper()
-
-	s.lockWriter()
-	defer s.unlockWriter()
+	s.stopSnapshotter()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	if s.wal == nil {
-		return nil
-	}
-	if err := s.wal.close(); err != nil {
+	s.mu.Unlock()
+
+	// Final flush after marking closed: writeSnapshot takes only a read lock
+	// internally via ExportAll, and no further writes can land because callers
+	// hit ensureOpenLocked. snapWriteMu guards against a late periodic flush.
+	if err := s.writeSnapshot(); err != nil {
 		return fmt.Errorf("shutting down hqstore: %w", err)
 	}
 	return nil
@@ -184,20 +154,5 @@ func (s *HQStore) ensureOpenLocked() error {
 	if s.closed {
 		return fmt.Errorf("hqstore is closed")
 	}
-	if s.walOn && s.wal == nil {
-		return fmt.Errorf("hqstore wal is not open")
-	}
 	return nil
-}
-
-func (s *HQStore) lockWriter() {
-	if s.walOn {
-		s.writeMu.Lock()
-	}
-}
-
-func (s *HQStore) unlockWriter() {
-	if s.walOn {
-		s.writeMu.Unlock()
-	}
 }

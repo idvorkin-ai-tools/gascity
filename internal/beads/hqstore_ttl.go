@@ -9,12 +9,9 @@ import (
 func (s *HQStore) PurgeExpired() (int, error) {
 	now := time.Now()
 
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return 0, err
 	}
 
@@ -25,22 +22,8 @@ func (s *HQStore) PurgeExpired() (int, error) {
 			ids = append(ids, id)
 		}
 	}
-	if len(ids) == 0 {
-		s.mu.Unlock()
-		return 0, nil
-	}
-	s.mu.Unlock()
-
-	entry := hqWALEntry{Op: hqWALDeleteBatch, Beads: make([]Bead, 0, len(ids))}
 	for _, id := range ids {
-		entry.Beads = append(entry.Beads, Bead{ID: id})
-	}
-	if err := s.appendAndApply(entry, func() {
-		for _, id := range ids {
-			s.deleteLocked(id)
-		}
-	}); err != nil {
-		return 0, err
+		s.deleteLocked(id)
 	}
 	return len(ids), nil
 }

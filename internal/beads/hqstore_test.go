@@ -34,14 +34,14 @@ func TestHQStoreConformance(t *testing.T) {
 	beadstest.RunCreationOrderTests(t, factory)
 }
 
-func TestHQStoreRecoversAfterSIGKILL(t *testing.T) {
+func TestHQStoreRecoversFlushedSnapshotAfterSIGKILL(t *testing.T) {
 	if os.Getenv("HQSTORE_SIGKILL_HELPER") == "1" {
 		hqStoreSIGKILLHelper(t)
 		return
 	}
 
 	dir := t.TempDir()
-	cmd := exec.Command(os.Args[0], "-test.run=TestHQStoreRecoversAfterSIGKILL")
+	cmd := exec.Command(os.Args[0], "-test.run=TestHQStoreRecoversFlushedSnapshotAfterSIGKILL")
 	cmd.Env = append(os.Environ(),
 		"HQSTORE_SIGKILL_HELPER=1",
 		"HQSTORE_DIR="+dir,
@@ -50,6 +50,8 @@ func TestHQStoreRecoversAfterSIGKILL(t *testing.T) {
 		t.Fatalf("starting helper: %v", err)
 	}
 
+	// The helper writes the id file only AFTER Snapshot() returns, so its
+	// presence guarantees a durable snapshot exists on disk.
 	idPath := filepath.Join(dir, "created-id")
 	var id string
 	deadline := time.Now().Add(5 * time.Second)
@@ -96,7 +98,10 @@ func hqStoreSIGKILLHelper(t *testing.T) {
 	if dir == "" {
 		t.Fatal("HQSTORE_DIR is required")
 	}
-	store, err := beads.OpenHQStore(dir, beads.WithHQStoreCheckpointEvery(0))
+	// Disable the periodic snapshotter so the only durable state is the one we
+	// force via Snapshot() — this makes the test deterministic about what
+	// survives the kill.
+	store, err := beads.OpenHQStore(dir, beads.WithHQStoreSnapshotInterval(0))
 	if err != nil {
 		t.Fatalf("helper OpenHQStore: %v", err)
 	}
@@ -104,64 +109,22 @@ func hqStoreSIGKILLHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper Create: %v", err)
 	}
+	if err := store.Snapshot(); err != nil {
+		t.Fatalf("helper Snapshot: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "created-id"), []byte(created.ID), 0o644); err != nil {
 		t.Fatalf("helper write id: %v", err)
 	}
 	select {}
 }
 
-func TestHQStoreRecoverySkipsPartialFinalWALLine(t *testing.T) {
+func TestHQStoreSnapshotRoundTripAcrossShutdown(t *testing.T) {
 	dir := t.TempDir()
-	store, err := beads.OpenHQStore(dir, beads.WithHQStoreCheckpointEvery(0))
+	store, err := beads.OpenHQStore(dir, beads.WithHQStoreSnapshotInterval(0))
 	if err != nil {
 		t.Fatalf("OpenHQStore: %v", err)
 	}
-	created, err := store.Create(beads.Bead{Title: "before-partial-line"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := store.Shutdown(); err != nil {
-		t.Fatalf("closing store for corruption setup: %v", err)
-	}
-
-	walPath := filepath.Join(dir, "wal.jsonl")
-	f, err := os.OpenFile(walPath, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("open wal append: %v", err)
-	}
-	if _, err := f.WriteString(`{"op":"upsert","id":"never-finished"`); err != nil {
-		_ = f.Close()
-		t.Fatalf("write partial wal line: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close partial wal file: %v", err)
-	}
-
-	recovered, err := beads.OpenHQStore(dir)
-	if err != nil {
-		t.Fatalf("OpenHQStore with partial final WAL line: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := recovered.Shutdown(); err != nil {
-			t.Errorf("Shutdown: %v", err)
-		}
-	})
-	got, err := recovered.Get(created.ID)
-	if err != nil {
-		t.Fatalf("Get(%q): %v", created.ID, err)
-	}
-	if got.Title != "before-partial-line" {
-		t.Fatalf("recovered title = %q, want before-partial-line", got.Title)
-	}
-}
-
-func TestHQStoreCheckpointRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	store, err := beads.OpenHQStore(dir, beads.WithHQStoreCheckpointEvery(0))
-	if err != nil {
-		t.Fatalf("OpenHQStore: %v", err)
-	}
-	first, err := store.Create(beads.Bead{Title: "checkpointed", Metadata: map[string]string{"phase": "one"}})
+	first, err := store.Create(beads.Bead{Title: "snapshotted", Metadata: map[string]string{"phase": "one"}})
 	if err != nil {
 		t.Fatalf("Create first: %v", err)
 	}
@@ -172,9 +135,7 @@ func TestHQStoreCheckpointRoundTrip(t *testing.T) {
 	if err := store.DepAdd(first.ID, second.ID, "tracks"); err != nil {
 		t.Fatalf("DepAdd: %v", err)
 	}
-	if err := store.Checkpoint(); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
+	// Shutdown flushes a final snapshot even with the periodic snapshotter off.
 	if err := store.Shutdown(); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -195,12 +156,68 @@ func TestHQStoreCheckpointRoundTrip(t *testing.T) {
 	if got.Metadata["phase"] != "one" {
 		t.Fatalf("metadata phase = %q, want one", got.Metadata["phase"])
 	}
+	// Ephemeral routing must survive the snapshot round-trip.
+	wisp, err := recovered.Get(second.ID)
+	if err != nil {
+		t.Fatalf("Get second: %v", err)
+	}
+	if !wisp.Ephemeral {
+		t.Fatalf("recovered wisp Ephemeral = false, want true")
+	}
 	deps, err := recovered.DepList(first.ID, "down")
 	if err != nil {
 		t.Fatalf("DepList: %v", err)
 	}
 	if len(deps) != 1 || deps[0].DependsOnID != second.ID {
 		t.Fatalf("deps = %+v, want dependency on %s", deps, second.ID)
+	}
+}
+
+func TestHQStorePeriodicSnapshotFlushes(t *testing.T) {
+	dir := t.TempDir()
+	store, err := beads.OpenHQStore(dir, beads.WithHQStoreSnapshotInterval(50*time.Millisecond))
+	if err != nil {
+		t.Fatalf("OpenHQStore: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	created, err := store.Create(beads.Bead{Title: "periodic"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Wait for the background snapshotter to publish a snapshot file.
+	snapPath := filepath.Join(dir, "snapshot.jsonl.gz")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(snapPath); statErr == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, statErr := os.Stat(snapPath); statErr != nil {
+		t.Fatalf("periodic snapshot not published: %v", statErr)
+	}
+	if err := store.LastSnapshotErr(); err != nil {
+		t.Fatalf("background snapshot error: %v", err)
+	}
+
+	// A fresh open (without shutting down the first) should see the periodic
+	// snapshot — reflecting what would survive a crash after the flush.
+	recovered, err := beads.OpenHQStore(dir, beads.WithHQStoreSnapshotInterval(0))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := recovered.Shutdown(); err != nil {
+			t.Errorf("Shutdown recovered: %v", err)
+		}
+	})
+	if _, err := recovered.Get(created.ID); err != nil {
+		t.Fatalf("Get(%q) from periodic snapshot: %v", created.ID, err)
 	}
 }
 
@@ -254,7 +271,9 @@ func TestHQStorePurgeExpired(t *testing.T) {
 }
 
 func TestHQStoreConcurrentCreateUpdate(t *testing.T) {
-	store, err := beads.OpenHQStore(t.TempDir(), beads.WithHQStoreCheckpointEvery(0))
+	// Run with the periodic snapshotter active so the race detector also
+	// exercises concurrent ExportAll reads against the write path.
+	store, err := beads.OpenHQStore(t.TempDir(), beads.WithHQStoreSnapshotInterval(20*time.Millisecond))
 	if err != nil {
 		t.Fatalf("OpenHQStore: %v", err)
 	}

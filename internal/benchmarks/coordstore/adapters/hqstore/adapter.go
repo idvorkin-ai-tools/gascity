@@ -27,14 +27,12 @@ func New() *Adapter {
 	return &Adapter{}
 }
 
-// Open initializes HQStore under cfg.DataDir.
+// Open initializes HQStore under cfg.DataDir. Durability is provided by the
+// async background snapshotter (no per-write fsync), so latency reflects the
+// in-memory hot core.
 func (a *Adapter) Open(_ context.Context, cfg coordstore.Config) error {
 	dir := filepath.Join(cfg.DataDir, "hqstore")
-	store, err := beads.OpenHQStore(dir,
-		beads.WithHQStoreCheckpointEvery(0),
-		beads.WithHQStoreWAL(false),
-		beads.WithHQStoreSyncWrites(false),
-	)
+	store, err := beads.OpenHQStore(dir)
 	if err != nil {
 		return err
 	}

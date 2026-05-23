@@ -39,35 +39,24 @@ func (s *HQStore) resetCoreLocked() {
 	s.mainIdx = newHQTierIndex()
 	s.wispIdx = newHQTierIndex()
 	s.seq = 0
-	s.writesSinceCP = 0
 }
 
 // Create persists a new bead.
 func (s *HQStore) Create(b Bead) (Bead, error) {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return Bead{}, err
 	}
 
 	stored := s.normalizeCreateLocked(b)
 	if _, ok := s.findLocked(stored.ID); ok {
-		s.mu.Unlock()
 		return Bead{}, fmt.Errorf("creating bead %q: duplicate id", stored.ID)
 	}
-	s.mu.Unlock()
 
-	entry := hqWALEntry{Op: hqWALCreate, Bead: &stored}
-	if err := s.appendAndApply(entry, func() {
-		s.upsertOwnedLocked(stored)
-		for _, dep := range depsFromNeeds(stored) {
-			s.depAddCoreLocked(dep.IssueID, dep.DependsOnID, dep.Type)
-		}
-	}); err != nil {
-		return Bead{}, err
+	s.upsertOwnedLocked(stored)
+	for _, dep := range depsFromNeeds(stored) {
+		s.depAddCoreLocked(dep.IssueID, dep.DependsOnID, dep.Type)
 	}
 	return cloneBead(stored), nil
 }
@@ -107,80 +96,63 @@ func (s *HQStore) Get(id string) (Bead, error) {
 
 // Update modifies fields of an existing bead.
 func (s *HQStore) Update(id string, opts UpdateOpts) error {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	b, ok := s.findLocked(id)
 	if !ok {
-		s.mu.Unlock()
 		return fmt.Errorf("updating bead %q: %w", id, ErrNotFound)
 	}
 	applyHQUpdate(&b, opts)
-	s.mu.Unlock()
-	return s.persistUpsertLocked("updating", id, b)
+	s.upsertOwnedLocked(b)
+	return nil
 }
 
 // Close sets a bead's status to closed.
 func (s *HQStore) Close(id string) error {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	b, ok := s.findLocked(id)
 	if !ok {
-		s.mu.Unlock()
 		return fmt.Errorf("closing bead %q: %w", id, ErrNotFound)
 	}
 	if b.Status == "closed" {
-		s.mu.Unlock()
 		return nil
 	}
 	b.Status = "closed"
-	s.mu.Unlock()
-	return s.persistUpsertLocked("closing", id, b)
+	s.upsertOwnedLocked(b)
+	return nil
 }
 
 // Reopen sets a bead's status to open.
 func (s *HQStore) Reopen(id string) error {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	b, ok := s.findLocked(id)
 	if !ok {
-		s.mu.Unlock()
 		return fmt.Errorf("reopening bead %q: %w", id, ErrNotFound)
 	}
 	if b.Status == "open" {
-		s.mu.Unlock()
 		return nil
 	}
 	b.Status = "open"
-	s.mu.Unlock()
-	return s.persistUpsertLocked("reopening", id, b)
+	s.upsertOwnedLocked(b)
+	return nil
 }
 
 // CloseAll closes multiple beads and applies metadata to each closed bead.
 func (s *HQStore) CloseAll(ids []string, metadata map[string]string) (int, error) {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return 0, err
 	}
 
@@ -188,7 +160,7 @@ func (s *HQStore) CloseAll(ids []string, metadata map[string]string) (int, error
 	for _, id := range ids {
 		idSet[id] = true
 	}
-	var changed []Bead
+	changed := 0
 	for id := range idSet {
 		b, ok := s.findLocked(id)
 		if !ok || b.Status == "closed" {
@@ -203,23 +175,10 @@ func (s *HQStore) CloseAll(ids []string, metadata map[string]string) (int, error
 				b.Metadata[k] = v
 			}
 		}
-		changed = append(changed, b)
+		s.upsertOwnedLocked(b)
+		changed++
 	}
-	if len(changed) == 0 {
-		s.mu.Unlock()
-		return 0, nil
-	}
-	s.mu.Unlock()
-
-	entry := hqWALEntry{Op: hqWALUpsertBatch, Beads: changed}
-	if err := s.appendAndApply(entry, func() {
-		for _, b := range changed {
-			s.upsertOwnedLocked(b)
-		}
-	}); err != nil {
-		return 0, err
-	}
-	return len(changed), nil
+	return changed, nil
 }
 
 // List returns beads matching the query.
@@ -401,17 +360,13 @@ func (s *HQStore) SetMetadataBatch(id string, kvs map[string]string) error {
 	if len(kvs) == 0 {
 		return nil
 	}
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	b, ok := s.findLocked(id)
 	if !ok {
-		s.mu.Unlock()
 		return fmt.Errorf("setting metadata batch on %q: %w", id, ErrNotFound)
 	}
 	if b.Metadata == nil {
@@ -420,79 +375,47 @@ func (s *HQStore) SetMetadataBatch(id string, kvs map[string]string) error {
 	for k, v := range kvs {
 		b.Metadata[k] = v
 	}
-	s.mu.Unlock()
-	return s.persistUpsertLocked("setting metadata batch on", id, b)
+	s.upsertOwnedLocked(b)
+	return nil
 }
 
 // Delete permanently removes a bead and dependency edges touching it.
 func (s *HQStore) Delete(id string) error {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	if _, ok := s.findLocked(id); !ok {
-		s.mu.Unlock()
 		return fmt.Errorf("deleting bead %q: %w", id, ErrNotFound)
 	}
-	s.mu.Unlock()
-
-	entry := hqWALEntry{Op: hqWALDelete, ID: id}
-	return s.appendAndApply(entry, func() {
-		s.deleteLocked(id)
-	})
+	s.deleteLocked(id)
+	return nil
 }
 
 // DepAdd records a dependency.
 func (s *HQStore) DepAdd(issueID, dependsOnID, depType string) error {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	if depType == "" {
 		depType = "blocks"
 	}
-	changed := s.depAddPreviewLocked(issueID, dependsOnID, depType)
-	if !changed {
-		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
-
-	dep := Dep{IssueID: issueID, DependsOnID: dependsOnID, Type: depType}
-	entry := hqWALEntry{Op: hqWALDepAdd, Dep: &dep}
-	return s.appendAndApply(entry, func() {
-		s.depAddCoreLocked(issueID, dependsOnID, depType)
-	})
+	s.depAddCoreLocked(issueID, dependsOnID, depType)
+	return nil
 }
 
 // DepRemove removes a dependency between two beads.
 func (s *HQStore) DepRemove(issueID, dependsOnID string) error {
-	s.lockWriter()
-	defer s.unlockWriter()
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
-	if !s.depExistsLocked(issueID, dependsOnID) {
-		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
-
-	entry := hqWALEntry{Op: hqWALDepRemove, ID: issueID, TargetID: dependsOnID}
-	return s.appendAndApply(entry, func() {
-		s.depRemoveCoreLocked(issueID, dependsOnID)
-	})
+	s.depRemoveCoreLocked(issueID, dependsOnID)
+	return nil
 }
 
 // DepList returns dependencies in the requested direction.
@@ -515,30 +438,89 @@ func (s *HQStore) DepList(id, direction string) ([]Dep, error) {
 	return result, nil
 }
 
-func (s *HQStore) persistUpsertLocked(action, id string, b Bead) error {
-	entry := hqWALEntry{Op: hqWALUpsert, ID: id, Bead: &b}
-	if err := s.appendAndApply(entry, func() {
-		s.upsertOwnedLocked(b)
-	}); err != nil {
-		return fmt.Errorf("%s bead %q: %w", action, id, err)
-	}
-	return nil
+// HQExport is a point-in-time snapshot of the full store state, suitable for
+// serialization by the snapshotter. Beads carry their Ephemeral flag so the
+// loader can route them back to the correct tier.
+type HQExport struct {
+	Seq   int      `json:"seq"`
+	Beads []Bead   `json:"beads"`
+	Deps  []Dep    `json:"deps"`
+	Order []string `json:"order"`
 }
 
-func (s *HQStore) appendAndApply(entry hqWALEntry, apply func()) error {
-	if s.wal != nil {
-		if err := s.wal.append(entry); err != nil {
-			return err
+// ExportAll returns a deep copy of the entire store state under a read lock.
+// The returned slices share no mutable state with the store, so the caller may
+// serialize them without holding any lock.
+func (s *HQStore) ExportAll() HQExport {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	exp := HQExport{
+		Seq:   s.seq,
+		Beads: make([]Bead, 0, len(s.main)+len(s.wisps)),
+		Deps:  snapshotHQDeps(s.deps),
+		Order: slicesCloneString(s.order),
+	}
+	// Emit in creation order so reloads preserve ordering deterministically;
+	// any beads missing from order (defensive) are appended afterward.
+	for _, id := range s.order {
+		if b, ok := s.main[id]; ok {
+			exp.Beads = append(exp.Beads, cloneBead(b))
+			continue
+		}
+		if b, ok := s.wisps[id]; ok {
+			exp.Beads = append(exp.Beads, cloneBead(b))
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	apply()
-	s.writesSinceCP++
-	if s.checkpointEvery > 0 && s.writesSinceCP >= s.checkpointEvery {
-		return s.checkpointLocked()
+	if len(exp.Beads) < len(s.main)+len(s.wisps) {
+		seen := make(map[string]struct{}, len(exp.Beads))
+		for _, b := range exp.Beads {
+			seen[b.ID] = struct{}{}
+		}
+		for id, b := range s.main {
+			if _, ok := seen[id]; !ok {
+				exp.Beads = append(exp.Beads, cloneBead(b))
+			}
+		}
+		for id, b := range s.wisps {
+			if _, ok := seen[id]; !ok {
+				exp.Beads = append(exp.Beads, cloneBead(b))
+			}
+		}
 	}
-	return nil
+	return exp
+}
+
+// loadExportLocked rebuilds in-memory state and indexes from a snapshot export.
+// The caller must hold s.mu (or be in single-threaded Open).
+func (s *HQStore) loadExportLocked(exp HQExport) {
+	s.resetCoreLocked()
+	s.seq = exp.Seq
+	order := exp.Order
+	if len(order) == 0 {
+		order = make([]string, 0, len(exp.Beads))
+		for _, b := range exp.Beads {
+			order = append(order, b.ID)
+		}
+	}
+	byID := make(map[string]Bead, len(exp.Beads))
+	for _, b := range exp.Beads {
+		byID[b.ID] = b
+	}
+	for _, id := range order {
+		b, ok := byID[id]
+		if !ok {
+			continue
+		}
+		s.upsertLocked(b)
+		delete(byID, id)
+	}
+	for _, b := range byID {
+		s.upsertLocked(b)
+	}
+	s.deps = snapshotHQDeps(exp.Deps)
+	if exp.Seq > s.seq {
+		s.seq = exp.Seq
+	}
 }
 
 func (s *HQStore) findLocked(id string) (Bead, bool) {
@@ -627,18 +609,6 @@ func hqBlockedBySnapshot(id string, deps []Dep, statusByID map[string]string) bo
 	return false
 }
 
-func (s *HQStore) depAddPreviewLocked(issueID, dependsOnID, depType string) bool {
-	for _, d := range s.deps {
-		if d.IssueID == issueID && d.DependsOnID == dependsOnID && d.Type == depType {
-			return false
-		}
-		if d.IssueID == issueID && d.DependsOnID == dependsOnID && d.Type != "parent-child" && depType != "parent-child" {
-			return d.Type != depType
-		}
-	}
-	return true
-}
-
 func (s *HQStore) depAddCoreLocked(issueID, dependsOnID, depType string) {
 	if depType == "" {
 		depType = "blocks"
@@ -653,15 +623,6 @@ func (s *HQStore) depAddCoreLocked(issueID, dependsOnID, depType string) {
 		}
 	}
 	s.deps = append(s.deps, Dep{IssueID: issueID, DependsOnID: dependsOnID, Type: depType})
-}
-
-func (s *HQStore) depExistsLocked(issueID, dependsOnID string) bool {
-	for _, d := range s.deps {
-		if d.IssueID == issueID && d.DependsOnID == dependsOnID {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *HQStore) depRemoveCoreLocked(issueID, dependsOnID string) {
@@ -890,5 +851,9 @@ func numericIDSuffix(id string) int {
 }
 
 func snapshotHQDeps(in []Dep) []Dep {
+	return slices.Clone(in)
+}
+
+func slicesCloneString(in []string) []string {
 	return slices.Clone(in)
 }
