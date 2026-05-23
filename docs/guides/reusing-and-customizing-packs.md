@@ -8,9 +8,9 @@ description: Bring a reusable pack into your city, keep it cached locally, and c
 Cities are the place where the work happens in Gas City. Packs define what a
 city can do and how it does it.
 
-A pack is a named collections of city-building definitions: agents, named sessions,
-formulas, skills, commands, defaults, and the files those definitions need at
-runtime. Cities are built from one or more packs.
+A pack is a named collection of city-building definitions: agents, named
+sessions, formulas, skills, commands, patches, and the files those definitions
+need at runtime. Cities are built from one or more packs.
 
 Every city has at least one pack: the city's root pack. The root pack is the
 same directory your `city.toml` file is in. The things your pack can do are
@@ -37,19 +37,19 @@ source = "https://packages.example/main/gascity"
 ```
 
 When Gas City loads this pack, it also loads the imported pack. If `gascity`
-exports an agent named `reviewer`, the city can use that agent through the
-import binding:
+defines a city-level agent named `reviewer`, the current PackV2 loader exposes
+that agent by its local runtime name:
 
 ```bash
 #!/usr/bin/env bash
 # Send work to the reviewer agent from the imported gascity pack.
-gc sling gascity/reviewer <bead-id>
+gc sling reviewer <bead-id>
 ```
 
-The part before the slash is the pack scope. The root city pack owns unscoped
-names such as `reviewer`. Imported packs are addressed through their binding,
-such as `gascity/reviewer` or `security/reviewer`. If two imported packs expose
-something with the same unqualified name, the scope disambiguates them.
+The import binding, `gascity`, is local to the importing TOML file. It is useful
+for dependency management and deterministic loading, but it is not currently a
+runtime namespace for agents. If two imported packs define the same non-fallback
+agent name on the same surface, loading fails instead of silently choosing one.
 
 When your city starts, Gas City resolves the root pack plus every pack it
 imports into one effective city configuration.
@@ -61,7 +61,7 @@ already packaged, named, tested, and published.
 This guide uses the `gascity` pack as the default example. The examples focus
 on reusing an agent because agents are the easiest surface to see in a running
 city. The same import model also applies when a pack primarily shares formulas,
-skills, commands, MCP configuration, defaults, or some combination of those
+skills, commands, MCP configuration, patches, or some combination of those
 surfaces.
 
 ## What A Pack Is
@@ -74,13 +74,17 @@ pack structure.
 ```text
 gascity/
   pack.toml
-  agents/
+  assets/
   commands/
+  doctor/
   formulas/
   mcps/
+  namepools/
   orders/
+  overlay/
+  prompts/
+  scripts/
   skills/
-  assets/
 ```
 
 Conceptually, a pack has three parts:
@@ -89,9 +93,10 @@ Conceptually, a pack has three parts:
   expectations. Metadata lives in `pack.toml`.
 - **Definitions** are the named things other users can run or build on, such as
   agents, named sessions, formulas, skills, commands, and MCP-related
-  configuration. Imports, exports, defaults, patches, and pack metadata live in
-  `pack.toml`. Definition bodies such as agents, formulas, skills, commands,
-  orders, and MCP configuration live in well-known definition directories.
+  configuration. Imports, pack metadata, provider declarations, services,
+  agent patches, commands, doctor checks, globals, agents, and named sessions
+  live in `pack.toml`. Formula files and other subsystem-specific definition
+  bodies live in well-known directories.
 - **Assets** are private files those definitions need, such as prompt templates
   or setup scripts. Assets live under `assets/` and are opaque to Gas City
   except when a definition points at them.
@@ -113,9 +118,9 @@ agent-only:
 
 - agents
 - named sessions for those agents
-- defaults that shape those agents
+- pack-level patches that shape those agents
 - formulas, skills, commands, and MCP configuration the pack chooses to expose
-- exported surface from packs this pack imports
+- definitions from imported packs that the loader makes visible by scope
 
 Naming is part of that API. When a pack publishes an agent named `reviewer`, it
 is making a product promise: downstream users can refer to `reviewer` and expect
@@ -204,7 +209,7 @@ Example output:
 Pack: main:gascity
 Version: 1.4.0
 Source: https://packages.example/main/gascity
-Exports:
+Definitions:
   agent reviewer
   agent triage
 ```
@@ -241,7 +246,7 @@ want to use:
 gc config show --validate
 
 # Look for the imported reviewer agent in the resolved config.
-gc config show | rg 'gascity/reviewer|reviewer'
+gc config show | rg 'name = "reviewer"|reviewer'
 ```
 
 If you later decide this city should stop using the pack, remove the import
@@ -278,8 +283,9 @@ pack files. If two machines have different registry lists, the same checked-in
 
 ## Use An Agent From A Pack
 
-After adding a pack, use the public names it exposes. If `gascity` exposes a
-`reviewer` agent, the fully qualified agent name is `gascity/reviewer`.
+After adding a pack, use the public names the loader exposes. If `gascity`
+defines a city-level `reviewer` agent, the current runtime agent name is
+`reviewer`.
 
 ```bash
 #!/usr/bin/env bash
@@ -287,28 +293,29 @@ After adding a pack, use the public names it exposes. If `gascity` exposes a
 gc status
 
 # Attach to the imported reviewer agent.
-gc session attach gascity/reviewer
+gc session attach reviewer
 
 # Send work to the imported reviewer agent.
-gc sling gascity/reviewer <bead-id>
+gc sling reviewer <bead-id>
 ```
 
 Example output:
 
 ```text
-Attached to gascity/reviewer
-Created bead GC-1042 assigned to gascity/reviewer
+Attached to reviewer
+Created bead GC-1042 assigned to reviewer
 ```
 
-The `gascity/` part is useful. It tells the reader, the operator, and future you
-where this agent came from. If a city later imports another pack that also has a
-`reviewer`, the namespace keeps the two product surfaces distinct.
+Import bindings do not currently qualify runtime agent names. If two imported
+packs define the same non-fallback city agent, Gas City reports a collision
+rather than relying on load order. Resolve that by choosing compatible packs,
+using fallback definitions where appropriate, or having the pack author publish
+distinct runtime names.
 
 ## Choose The Import Name
 
-Import bindings are product names. If you add `main:gascity` as `gascity`,
-downstream users understand that this pack is exposing a Gas City-shaped
-surface:
+Import bindings are local dependency names. If you add `main:gascity` as
+`gascity`, the `pack.toml` dependency is easy to read:
 
 ```bash
 #!/usr/bin/env bash
@@ -322,12 +329,12 @@ Example output:
 Added main:gascity as gascity
 ```
 
-If you add it as `review`, you are deliberately presenting a different product
-stance:
+If you add it as `review`, only the local import binding changes. Current
+runtime agent names do not automatically become `review/...`:
 
 ```bash
 #!/usr/bin/env bash
-# Present the imported surface under a local product name.
+# Record the same source under a different local import binding.
 gc pack add main:gascity --name review
 ```
 
@@ -337,56 +344,57 @@ Example output:
 Added main:gascity as review
 ```
 
-Choose the binding you want users to see:
+Choose the binding you want maintainers to see in TOML:
 
 - Keep the original pack name when provenance is useful to users.
-- Rename an import when two imported surfaces would otherwise collide.
-- Rename an import when your pack is deliberately repackaging another pack's
-  behavior under a new product stance.
-- Do not rely on load order to decide which imported name wins.
+- Rename an import when the same source appears in multiple roles.
+- Rename an import when the local pack is deliberately documenting a different
+  relationship to the dependency.
+- Do not rely on the binding to disambiguate runtime agent names.
 
-When two imports want the same public name, choose the public name explicitly.
-The goal is for a reader to understand the city by reading names, not by
-reverse-engineering resolution order.
+When two imports define the same public runtime name, fix the pack definitions
+or choose different packs. The current loader does not use the import binding
+as a runtime namespace.
 
 ## Customize Without Forking
 
 Most pack reuse should not start with a fork. If the imported pack is basically
 the right product, customize it at the importing layer first.
 
-Use defaults when you want local policy:
+Use a patch when you want local policy for one imported agent:
 
 ```toml
-[defaults."gascity/reviewer"]
+[[patches.agent]]
+name = "reviewer"
 provider = "codex"
 idle_timeout = "45m"
 option_defaults = { model = "sonnet", permission_mode = "plan" }
 ```
 
-Defaults say: "when this city uses the reviewer agent from the gascity pack, use
-these local choices." The source pack still owns the reusable agent definition.
-The local pack owns only the policy choice.
+That patch says: "when this city uses the resolved `reviewer` agent, use these
+local choices." The source pack still owns the reusable agent definition. The
+local pack owns only the policy choice.
 
-Use patches when you need to change one concrete resolved definition:
+You can use another patch when you need to change one concrete resolved
+definition:
 
 ```toml
 [[patches.agent]]
-name = "gascity/reviewer"
+name = "reviewer"
 prompt_template = "assets/prompts/reviewer.md"
 session_setup_append = ["tmux set status-left '[review]'"]
 ```
 
-A patch is stronger than a default. It targets the resolved definition directly.
-Reach for a patch when you are replacing a prompt, appending setup behavior, or
-changing a field that is not really a broad policy default.
+A patch targets the resolved definition directly. Reach for a patch when you are
+replacing a prompt, appending setup behavior, changing provider options, or
+changing another field on an imported agent.
 
 People sometimes describe this as deriving from a pack. That mental model can
 help if it reminds you that the source pack still has its own identity. But as a
-user task, the practical choice is simpler: use defaults for policy, patches for
-specific resolved definitions, and forks only when you want to own a different
-product.
+user task, the practical choice is simpler: use patches for local policy and
+forks only when you want to own a different product.
 
-After changing defaults or patches, validate what Gas City resolves:
+After changing patches, validate what Gas City resolves:
 
 ```bash
 #!/usr/bin/env bash
@@ -394,7 +402,7 @@ After changing defaults or patches, validate what Gas City resolves:
 gc config show --validate
 
 # Confirm that the resolved reviewer includes the choices we just made.
-gc config show | rg 'gascity/reviewer|codex|idle_timeout'
+gc config show | rg 'name = "reviewer"|codex|idle_timeout'
 
 # Check the running city after the config still validates.
 gc status
@@ -404,7 +412,7 @@ Example output:
 
 ```text
 Config OK
-gascity/reviewer provider=codex idle_timeout=45m
+reviewer provider=codex idle_timeout=45m
 City running
 ```
 
@@ -455,24 +463,26 @@ schema = 1
 [imports.gascity]
 source = "https://packages.example/main/gascity"
 
-[defaults."gascity/reviewer"]
-provider = "codex"
+[[patches.agent]]
+name = "reviewer"
 idle_timeout = "45m"
 ```
 
 The import binding, `gascity`, is local to this pack. The pack can use that
-binding in defaults, patches, and exports without exposing every imported
-detail to its own consumers.
+binding in its own imports and pack-management flows without making that binding
+a runtime namespace for its consumers.
 
-## Export Imported Surface Area
+## Future Export Surface
 
-Some packs import agents for internal use only. Other packs intentionally
-re-export imported surface as part of their own public API. The `[export]`
-surface is how a pack answers the key product question: how much of an imported
-pack should this pack expose?
+The `[export]` surface is specified as future/deferred behavior. It is useful
+for understanding where pack reuse is going, but it is not implemented by the
+current PackV2 loader. Do not put `[export]` tables in a pack you expect the
+current loader to accept.
 
-This example keeps one imported pack grouped under a namespace and presents
-another imported pack as if it belongs to the parent pack:
+The intended product question is: how much of an imported pack should this pack
+expose as part of its own public API? A future export surface may let a pack keep
+one imported pack grouped under a namespace and present another imported pack as
+if it belongs to the parent pack:
 
 ```toml
 [pack]
@@ -485,10 +495,6 @@ source = "https://packages.example/main/gascity"
 [imports.triage]
 source = "https://packages.example/main/triage"
 
-[defaults."gascity/reviewer"]
-provider = "codex"
-idle_timeout = "45m"
-
 [export.gascity]
 as = "review"
 
@@ -496,17 +502,18 @@ as = "review"
 as = "."
 ```
 
-Read that example like this:
+Read that future example like this:
 
 - `gascity` is imported and re-exposed under `review.*`.
 - `triage` is imported and re-exposed as part of the parent pack's top-level
   surface.
-- Imported surface without a matching `[export]` remains internal.
+- Imported surface without a matching `[export]` would remain internal.
 - Every pack keeps its own identity and product stance.
 
-If you see older PackV2 examples that use `transitive` or inline `export`
-controls, treat them as transitional examples. New packs should use `[export]`
-for this decision.
+For current PackV2, imported definitions are visible according to loader scope
+rules, not according to `[export]`. If you see older PackV2 examples that use
+`transitive`, inline import `export`, or `[export]`, treat them as transitional
+or future-facing examples rather than current authoritative PackV2 syntax.
 
 ## Creating And Publishing Packs
 
@@ -540,10 +547,10 @@ Config OK
 The first edit creates the pack metadata and the first definitions. The
 `gc pack add` command records any dependency the new pack has on another pack.
 
-Inside the pack, each public definition is a commitment. A stable agent name,
-formula name, or exported namespace becomes something downstream users can build
-against. Keep private implementation files private, and expose the smallest
-surface that makes the pack useful.
+Inside the pack, each public definition is a commitment. A stable agent name or
+formula name becomes something downstream users can build against. Keep private
+implementation files private, and expose the smallest surface that makes the
+pack useful.
 
 To publish a pack, you make its source available and add a catalog entry to a
 pack registry. The Gas City-managed registry is the default place for broadly
@@ -622,7 +629,7 @@ every downstream user, or when the imported pack no longer matches your product
 stance.
 
 If you are only tuning provider choices, prompts, timeouts, or one agent's
-setup, prefer `gc pack add`, defaults, and patches first.
+setup, prefer `gc pack add` and agent patches first.
 
 ## What This Guide Does Not Cover
 
@@ -632,8 +639,8 @@ or every compatibility detail for older PackV2 import/export syntax.
 
 Those details belong in the pack registry design notes, migration docs, and
 reference pages. The main thing to remember here is the task flow: find a pack,
-add it with `gc pack`, use its public surface, customize locally, and export
-only what your pack intends to make public.
+add it with `gc pack`, use its public surface, and customize locally without
+forking unless you want to own a different product.
 
 ## See Also
 
