@@ -127,6 +127,21 @@ func IsReadyExcludedType(t string) bool {
 	return readyExcludeTypes[t]
 }
 
+// IsReadyExcludedBead reports whether a bead is infrastructure rather than
+// actionable Ready work.
+func IsReadyExcludedBead(b Bead) bool {
+	if IsReadyExcludedType(b.Type) {
+		return true
+	}
+	for _, label := range b.Labels {
+		switch label {
+		case "gc:session", "gc:order-tracking", "order-tracking":
+			return true
+		}
+	}
+	return false
+}
+
 // Dep represents a dependency relationship between two beads. The IssueID
 // depends on (is blocked by) DependsOnID. Type describes the relationship
 // kind (e.g. "blocks", "tracks", "relates-to").
