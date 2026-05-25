@@ -72,6 +72,7 @@ type HQStore struct {
 	wisps     map[string]Bead
 	order     []string
 	orderSeen map[string]bool
+	orderGone map[string]bool
 	deps      []Dep
 	mainIdx   hqTierIndex
 	wispIdx   hqTierIndex

@@ -31,6 +31,7 @@ func (s *HQStore) resetCoreLocked() {
 	s.wisps = make(map[string]Bead)
 	s.order = nil
 	s.orderSeen = make(map[string]bool)
+	s.orderGone = make(map[string]bool)
 	s.deps = nil
 	s.mainIdx = newHQTierIndex()
 	s.wispIdx = newHQTierIndex()
@@ -579,9 +580,13 @@ func (s *HQStore) upsertOwnedLocked(b Bead) {
 		delete(s.wisps, b.ID)
 	}
 	if !s.orderSeen[b.ID] {
+		if s.orderGone[b.ID] {
+			s.compactOrderLocked()
+		}
 		s.order = append(s.order, b.ID)
 		s.orderSeen[b.ID] = true
 	}
+	delete(s.orderGone, b.ID)
 	if n := numericIDSuffix(b.ID); n > s.seq {
 		s.seq = n
 	}
@@ -611,6 +616,34 @@ func (s *HQStore) deleteLocked(id string) {
 		filtered = append(filtered, dep)
 	}
 	s.deps = filtered
+	delete(s.orderSeen, id)
+	s.orderGone[id] = true
+
+	if len(s.order) > 2*(len(s.main)+len(s.wisps))+64 {
+		s.compactOrderLocked()
+	}
+}
+
+func (s *HQStore) compactOrderLocked() {
+	live := make([]string, 0, len(s.main)+len(s.wisps))
+	seen := make(map[string]bool, len(s.main)+len(s.wisps))
+	for _, id := range s.order {
+		if seen[id] {
+			continue
+		}
+		if _, ok := s.main[id]; ok {
+			live = append(live, id)
+			seen[id] = true
+			continue
+		}
+		if _, ok := s.wisps[id]; ok {
+			live = append(live, id)
+			seen[id] = true
+		}
+	}
+	s.order = live
+	s.orderSeen = seen
+	s.orderGone = make(map[string]bool)
 }
 
 func (s *HQStore) candidateIDsLocked(q ListQuery) hqIDSet {
