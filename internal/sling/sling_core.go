@@ -458,6 +458,7 @@ func doStartGraphWorkflow(rootID, sourceBeadID string, a config.Agent, method st
 	result.BeadID = rootID
 
 	SlingTracef("workflow-start begin root=%s source=%s agent=%s method=%s", rootID, sourceBeadID, a.QualifiedName(), method)
+	sourceBeadID = resolveGraphWorkflowSourceBoundary(deps.Store, sourceBeadID)
 
 	if err := PromoteWorkflowLaunchBead(deps.Store, rootID); err != nil {
 		return result, fmt.Errorf("setting workflow root %s in_progress: %w", rootID, err)
@@ -485,6 +486,34 @@ func doStartGraphWorkflow(rootID, sourceBeadID string, a config.Agent, method st
 		deps.Notify.PokeControlDispatch(deps.CityPath)
 	}
 	return result, nil
+}
+
+const drainUnitConvoySyntheticKind = "drain-unit-convoy"
+
+// resolveGraphWorkflowSourceBoundary returns the ownership boundary bead for a
+// graph workflow launch. Synthetic drain-unit convoys use the original member
+// bead as the source boundary so workflow lineage and cleanup attach to the
+// underlying work item rather than the temporary unit convoy.
+func resolveGraphWorkflowSourceBoundary(store beads.Store, sourceBeadID string) string {
+	sourceBeadID = strings.TrimSpace(sourceBeadID)
+	if sourceBeadID == "" || store == nil {
+		return sourceBeadID
+	}
+	source, err := store.Get(sourceBeadID)
+	if err != nil {
+		return sourceBeadID
+	}
+	if source.Type != "convoy" {
+		return sourceBeadID
+	}
+	if !strings.EqualFold(strings.TrimSpace(source.Metadata["gc.synthetic_kind"]), drainUnitConvoySyntheticKind) {
+		return sourceBeadID
+	}
+	memberID := strings.TrimSpace(source.Metadata["gc.drain_member_id"])
+	if memberID == "" {
+		return sourceBeadID
+	}
+	return memberID
 }
 
 type pendingSourceWorkflowLaunch struct {

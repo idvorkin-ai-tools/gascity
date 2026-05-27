@@ -2075,6 +2075,69 @@ title = "Do work"
 	}
 }
 
+func TestDoStartGraphWorkflowUsesDrainMemberAsSourceBoundary(t *testing.T) {
+	store := beads.NewMemStore()
+	member, err := store.Create(beads.Bead{Title: "member", Type: "task", Status: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	convoy, err := store.Create(beads.Bead{
+		Title:  "drain unit",
+		Type:   "convoy",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.synthetic":       "true",
+			"gc.synthetic_kind":  drainUnitConvoySyntheticKind,
+			"gc.drain_member_id": member.ID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := store.Create(beads.Bead{Title: "workflow", Type: "task", Status: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deps := SlingDeps{
+		Store:    store,
+		StoreRef: "city:test",
+	}
+	result, err := doStartGraphWorkflow(root.ID, convoy.ID, config.Agent{Name: "mayor"}, "formula", deps)
+	if err != nil {
+		t.Fatalf("doStartGraphWorkflow: %v", err)
+	}
+	if result.WorkflowID != root.ID {
+		t.Fatalf("WorkflowID = %q, want %q", result.WorkflowID, root.ID)
+	}
+
+	updatedRoot, err := store.Get(root.ID)
+	if err != nil {
+		t.Fatalf("Get(root): %v", err)
+	}
+	if got := updatedRoot.Metadata["gc.source_bead_id"]; got != member.ID {
+		t.Fatalf("root gc.source_bead_id = %q, want %q", got, member.ID)
+	}
+	if got := updatedRoot.Metadata[sourceworkflow.SourceStoreRefMetadataKey]; got != "city:test" {
+		t.Fatalf("root %s = %q, want city:test", sourceworkflow.SourceStoreRefMetadataKey, got)
+	}
+
+	updatedMember, err := store.Get(member.ID)
+	if err != nil {
+		t.Fatalf("Get(member): %v", err)
+	}
+	if got := updatedMember.Metadata["workflow_id"]; got != root.ID {
+		t.Fatalf("member workflow_id = %q, want %q", got, root.ID)
+	}
+	updatedConvoy, err := store.Get(convoy.ID)
+	if err != nil {
+		t.Fatalf("Get(convoy): %v", err)
+	}
+	if got := updatedConvoy.Metadata["workflow_id"]; got != "" {
+		t.Fatalf("convoy workflow_id = %q, want empty", got)
+	}
+}
+
 func TestSlingAttachGraphFormulaRollsBackWhenLaunchVisibilityNeverConverges(t *testing.T) {
 	formulaDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(`

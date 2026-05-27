@@ -157,6 +157,7 @@ type slingOpts = sling.SlingOpts
 var (
 	slingPokeController        = pokeController
 	slingPokeControlDispatcher = pokeControlDispatch
+	slingNudgeDeliveryTimeout  = 10 * time.Second
 )
 
 // slingDeps is an alias for sling.SlingDeps.
@@ -1552,12 +1553,14 @@ func deliverSlingNudge(target nudgeTarget, sp runtime.Provider, store beads.Stor
 	if running {
 		handle, err := workerHandleForNudgeTarget(target, store, sp)
 		if err == nil {
-			result, nudgeErr := handle.Nudge(context.Background(), worker.NudgeRequest{
+			ctx, cancel := context.WithTimeout(context.Background(), slingNudgeDeliveryTimeout)
+			result, nudgeErr := handle.Nudge(ctx, worker.NudgeRequest{
 				Text:     msg,
 				Delivery: worker.NudgeDeliveryWaitIdle,
 				Source:   "sling",
 				Wake:     worker.NudgeWakeLiveOnly,
 			})
+			cancel()
 			if nudgeErr == nil && result.Delivered {
 				telemetry.RecordNudge(context.Background(), target.agent.QualifiedName(), nil)
 				stampLastNudgeDeliveredAt(store, target.sessionID, time.Now())

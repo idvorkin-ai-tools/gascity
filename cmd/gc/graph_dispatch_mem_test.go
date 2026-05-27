@@ -62,6 +62,13 @@ func beadRef(bead beads.Bead) string {
 	return bead.Metadata["gc.step_ref"]
 }
 
+func graphWorktreeOwnerID(source beads.Bead) string {
+	if owner := strings.TrimSpace(source.Metadata["gc.drain_member_id"]); owner != "" {
+		return owner
+	}
+	return source.ID
+}
+
 func selectExecutableGraphWorkerBead(ready []beads.Bead, assignee string) (beads.Bead, bool, error) {
 	for _, bead := range ready {
 		if bead.Assignee != assignee {
@@ -84,24 +91,27 @@ func selectExecutableGraphWorkerBead(ready []beads.Bead, assignee string) (beads
 	return beads.Bead{}, false, nil
 }
 
-func executeMemGraphWorkerBead(t *testing.T, store beads.Store, bead beads.Bead, sourceID, cityPath, mode string) {
+func executeMemGraphWorkerBead(t *testing.T, store beads.Store, bead beads.Bead, sourceID, worktreeOwnerID, cityPath, mode string) {
 	t.Helper()
 
+	if worktreeOwnerID == "" {
+		worktreeOwnerID = sourceID
+	}
 	ref := beadRef(bead)
 	switch {
 	case strings.Contains(ref, ".workspace-setup"):
-		workDir := filepath.Join(cityPath, "worktrees", sourceID)
+		workDir := filepath.Join(cityPath, "worktrees", worktreeOwnerID)
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
 			t.Fatalf("MkdirAll(%q): %v", workDir, err)
 		}
-		if err := store.SetMetadata(sourceID, "work_dir", workDir); err != nil {
+		if err := store.SetMetadata(worktreeOwnerID, "work_dir", workDir); err != nil {
 			t.Fatalf("SetMetadata(work_dir): %v", err)
 		}
 	case strings.Contains(ref, ".implement"):
-		source := mustGetMemBead(t, store, sourceID)
+		source := mustGetMemBead(t, store, worktreeOwnerID)
 		workDir := source.Metadata["work_dir"]
 		if workDir == "" {
-			t.Fatalf("implement step missing work_dir on source bead %s", sourceID)
+			t.Fatalf("implement step missing work_dir on worktree owner bead %s", worktreeOwnerID)
 		}
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
 			t.Fatalf("MkdirAll(%q): %v", workDir, err)
@@ -114,12 +124,12 @@ func executeMemGraphWorkerBead(t *testing.T, store beads.Store, bead beads.Bead,
 			t.Fatalf("SetMetadata(submitted): %v", err)
 		}
 	case strings.Contains(ref, ".cleanup-worktree"):
-		source := mustGetMemBead(t, store, sourceID)
+		source := mustGetMemBead(t, store, worktreeOwnerID)
 		workDir := source.Metadata["work_dir"]
 		if workDir != "" {
 			_ = os.RemoveAll(workDir)
 		}
-		if err := store.SetMetadata(sourceID, "work_dir", ""); err != nil {
+		if err := store.SetMetadata(worktreeOwnerID, "work_dir", ""); err != nil {
 			t.Fatalf("SetMetadata(clear work_dir): %v", err)
 		}
 	case strings.Contains(ref, ".preflight-tests") && mode == "fail-preflight":
@@ -173,6 +183,7 @@ func runMemGraphWorkflowToCompletion(t *testing.T, store beads.Store, workflowID
 		if err != nil {
 			t.Fatalf("Ready() after control: %v", err)
 		}
+		worktreeOwnerID := graphWorktreeOwnerID(mustGetMemBead(t, store, sourceID))
 		for {
 			bead, ok, err := selectExecutableGraphWorkerBead(ready, workerSession)
 			if err != nil {
@@ -181,7 +192,7 @@ func runMemGraphWorkflowToCompletion(t *testing.T, store beads.Store, workflowID
 			if !ok {
 				break
 			}
-			executeMemGraphWorkerBead(t, store, bead, sourceID, cityPath, mode)
+			executeMemGraphWorkerBead(t, store, bead, sourceID, worktreeOwnerID, cityPath, mode)
 			progressed = true
 			ready, err = store.Ready()
 			if err != nil {
@@ -411,6 +422,58 @@ func TestGraphWorkflowInMemoryCreateExecuteWaitFlow(t *testing.T) {
 	root = mustGetMemBead(t, store, workflowID)
 	if root.Status != "closed" || root.Metadata["gc.outcome"] != "pass" {
 		t.Fatalf("root = status %q outcome %q, want closed/pass", root.Status, root.Metadata["gc.outcome"])
+	}
+}
+
+func TestGraphWorktreeOwnerIDPrefersDrainMember(t *testing.T) {
+	source := beads.Bead{
+		ID: "convoy-1",
+		Metadata: map[string]string{
+			"gc.drain_member_id": "member-9",
+		},
+	}
+	if got := graphWorktreeOwnerID(source); got != "member-9" {
+		t.Fatalf("graphWorktreeOwnerID = %q, want member-9", got)
+	}
+
+	if got := graphWorktreeOwnerID(beads.Bead{ID: "convoy-2"}); got != "convoy-2" {
+		t.Fatalf("graphWorktreeOwnerID fallback = %q, want convoy-2", got)
+	}
+}
+
+func TestExecuteMemGraphWorkerBeadWritesWorkDirToDrainMemberOwner(t *testing.T) {
+	store := beads.NewMemStore()
+	source, err := store.Create(beads.Bead{Title: "source", Type: "task"})
+	if err != nil {
+		t.Fatalf("Create source: %v", err)
+	}
+	owner, err := store.Create(beads.Bead{Title: "owner", Type: "task"})
+	if err != nil {
+		t.Fatalf("Create owner: %v", err)
+	}
+	if err := store.SetMetadata(source.ID, "gc.drain_member_id", owner.ID); err != nil {
+		t.Fatalf("SetMetadata(gc.drain_member_id): %v", err)
+	}
+
+	step, err := store.Create(beads.Bead{
+		Title: "step-setup",
+		Metadata: map[string]string{
+			"gc.step_ref": "mol-do-work.workspace-setup",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create step: %v", err)
+	}
+	cityPath := t.TempDir()
+	executeMemGraphWorkerBead(t, store, step, source.ID, graphWorktreeOwnerID(mustGetMemBead(t, store, source.ID)), cityPath, "success")
+
+	ownerBead := mustGetMemBead(t, store, owner.ID)
+	if got := ownerBead.Metadata["work_dir"]; got != filepath.Join(cityPath, "worktrees", owner.ID) {
+		t.Fatalf("owner work_dir = %q, want %q", got, filepath.Join(cityPath, "worktrees", owner.ID))
+	}
+	sourceBead := mustGetMemBead(t, store, source.ID)
+	if got := sourceBead.Metadata["work_dir"]; got != "" {
+		t.Fatalf("source work_dir = %q, want empty", got)
 	}
 }
 

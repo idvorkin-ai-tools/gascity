@@ -11,6 +11,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/formula"
+	"github.com/gastownhall/gascity/internal/graphv2"
 	"github.com/gastownhall/gascity/internal/molecule"
 	"github.com/spf13/cobra"
 )
@@ -510,6 +511,11 @@ bead into a sub-workflow at runtime.`,
 			cookVars := parseFormulaVars(vars)
 
 			if attach != "" {
+				inv, err := graphv2.PrepareInvocation(cmd.Context(), store, args[0], scope.searchPaths, attach, cookVars)
+				if err != nil {
+					return fmt.Errorf("prepare graph.v2 invocation: %w", err)
+				}
+				cookVars = inv.Vars
 				recipe, err := formula.CompileWithoutRuntimeVarValidation(cmd.Context(), args[0], scope.searchPaths, cookVars)
 				if err != nil {
 					return fmt.Errorf("compile: %w", err)
@@ -547,6 +553,12 @@ bead into a sub-workflow at runtime.`,
 				_ = pokeControlDispatch(cityPath)
 				return nil
 			}
+
+			inv, err := graphv2.PrepareInvocation(cmd.Context(), store, args[0], scope.searchPaths, "", cookVars)
+			if err != nil {
+				return fmt.Errorf("prepare graph.v2 invocation: %w", err)
+			}
+			cookVars = inv.Vars
 
 			result, err := molecule.Cook(cmd.Context(), store, args[0], scope.searchPaths, molecule.Options{
 				Title: title,

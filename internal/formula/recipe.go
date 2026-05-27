@@ -13,6 +13,15 @@ type Recipe struct {
 	// Description is the formula's description field.
 	Description string
 
+	// Source is the compiled formula file path.
+	Source string
+
+	// SourcePath is the symlink-resolved source file path for the formula.
+	SourcePath string
+
+	// PackRoot is the nearest ancestor pack root for SourcePath.
+	PackRoot string
+
 	// Steps is the flattened, ordered step list. Steps[0] is always the
 	// root workflow bead. Subsequent entries are in creation order (parent
 	// before children, depth-first).
@@ -66,6 +75,12 @@ type RecipeStep struct {
 
 	// Assignee is the agent/user to assign this step to.
 	Assignee string
+
+	// SourcePath is the symlink-resolved source file path for this step.
+	SourcePath string
+
+	// PackRoot is the nearest ancestor pack root for SourcePath.
+	PackRoot string
 
 	// IsRoot is true for the root workflow bead (Steps[0]).
 	IsRoot bool

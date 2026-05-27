@@ -123,6 +123,12 @@ type Formula struct {
 
 	// Source tracks where this formula was loaded from (set by parser).
 	Source string `json:"source,omitempty"`
+
+	// SourcePath is the symlink-resolved source file path for this formula.
+	SourcePath string `json:"-"`
+
+	// PackRoot is the nearest ancestor pack root for SourcePath.
+	PackRoot string `json:"-"`
 }
 
 // VarDef defines a template variable with optional validation.
@@ -301,6 +307,12 @@ type Step struct {
 	// SourceLocation is the path within the source formula.
 	// Format: "steps[0]", "steps[2].children[1]", "advice[0].after", "loop.body[0]"
 	SourceLocation string `json:"-"` // Internal only, not serialized to JSON
+
+	// SourcePath is the symlink-resolved source file path for this step.
+	SourcePath string `json:"-"`
+
+	// PackRoot is the nearest ancestor pack root for SourcePath.
+	PackRoot string `json:"-"`
 }
 
 // UnmarshalJSON accepts the canonical public "check" spelling while keeping the
@@ -984,6 +996,9 @@ func (f *Formula) Validate() error {
 		if name == "" {
 			errs = append(errs, "vars: variable name cannot be empty")
 			continue
+		}
+		if name == PackRootIntrinsic {
+			errs = append(errs, fmt.Sprintf("vars.%s: graph.v2 intrinsic cannot be declared", name))
 		}
 		if v.Required && v.Default != nil {
 			errs = append(errs, fmt.Sprintf("vars.%s: cannot have both required:true and default", name))

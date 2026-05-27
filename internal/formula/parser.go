@@ -110,6 +110,8 @@ func (p *Parser) ParseFile(path string) (*Formula, error) {
 	}
 
 	formula.Source = absPath
+	formula.SourcePath = ResolveSourcePath(absPath)
+	formula.PackRoot = PackRootFromSourcePath(formula.SourcePath)
 
 	// Set source tracing info on all steps (gt-8tmz.18)
 	SetSourceInfo(formula)
@@ -195,6 +197,8 @@ func (p *Parser) Resolve(formula *Formula) (*Formula, error) {
 		Contract:    formula.Contract,
 		Type:        formula.Type,
 		Source:      formula.Source,
+		SourcePath:  formula.SourcePath,
+		PackRoot:    formula.PackRoot,
 		Phase:       formula.Phase,
 		Pour:        formula.Pour,
 		Vars:        make(map[string]*VarDef),
@@ -380,7 +384,10 @@ func ExtractVariables(formula *Formula) []string {
 	extract := func(s string) {
 		matches := varPattern.FindAllStringSubmatch(s, -1)
 		for _, match := range matches {
-			if len(match) >= 2 && !seen[match[1]] {
+			if len(match) < 2 || match[1] == PackRootIntrinsic {
+				continue
+			}
+			if !seen[match[1]] {
 				seen[match[1]] = true
 				vars = append(vars, match[1])
 			}
@@ -629,26 +636,28 @@ func resolveDescriptionFiles(steps []*Step, baseDir string) {
 // SetSourceInfo populates the SourceFormula and SourcePath fields on each
 // step in the formula, recording the originating formula name and step path.
 func SetSourceInfo(formula *Formula) {
-	setSourceInfoRecursive(formula.Steps, formula.Formula, "steps")
+	setSourceInfoRecursive(formula.Steps, formula.Formula, "steps", formula.SourcePath, formula.PackRoot)
 	// Also set source info on template steps for expansion formulas
-	setSourceInfoRecursive(formula.Template, formula.Formula, "template")
+	setSourceInfoRecursive(formula.Template, formula.Formula, "template", formula.SourcePath, formula.PackRoot)
 }
 
 // setSourceInfoRecursive recursively sets source info on steps.
-func setSourceInfoRecursive(steps []*Step, formulaName, pathPrefix string) {
+func setSourceInfoRecursive(steps []*Step, formulaName, pathPrefix, sourcePath, packRoot string) {
 	for i, step := range steps {
 		step.SourceFormula = formulaName
 		step.SourceLocation = fmt.Sprintf("%s[%d]", pathPrefix, i)
+		step.SourcePath = sourcePath
+		step.PackRoot = packRoot
 
 		if len(step.Children) > 0 {
 			childPath := fmt.Sprintf("%s[%d].children", pathPrefix, i)
-			setSourceInfoRecursive(step.Children, formulaName, childPath)
+			setSourceInfoRecursive(step.Children, formulaName, childPath, sourcePath, packRoot)
 		}
 
 		// Handle loop body steps
 		if step.Loop != nil && len(step.Loop.Body) > 0 {
 			bodyPath := fmt.Sprintf("%s[%d].loop.body", pathPrefix, i)
-			setSourceInfoRecursive(step.Loop.Body, formulaName, bodyPath)
+			setSourceInfoRecursive(step.Loop.Body, formulaName, bodyPath, sourcePath, packRoot)
 		}
 	}
 }

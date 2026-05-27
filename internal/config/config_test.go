@@ -1570,6 +1570,90 @@ func TestEffectiveWorkQueryPoolNoPoolName(t *testing.T) {
 	}
 }
 
+func TestEffectiveWorkQueryEphemeralPrefersRoutedQueueBeforeReadyAssigned(t *testing.T) {
+	a := Agent{Name: "worker", Dir: "foundations"}
+	out := runEffectiveWorkQuery(t, a, map[string]string{
+		"GC_SESSION_ORIGIN": "ephemeral",
+		"GC_SESSION_NAME":   "worker-session",
+		"GC_ALIAS":          "foundations/worker-1",
+	}, `#!/bin/sh
+set -eu
+case "$*" in
+  *"list --status in_progress"*)
+    printf '[]'
+    ;;
+  *"ready --metadata-field gc.routed_to=foundations/worker --unassigned --exclude-type=epic"*)
+    printf '[{"id":"fo-routed"}]'
+    ;;
+  *"ready --assignee="*)
+    printf '[{"id":"fo-assigned"}]'
+    ;;
+  *)
+    printf '[]'
+    ;;
+esac
+`)
+	if got, want := strings.TrimSpace(out), `[{"id":"fo-routed"}]`; got != want {
+		t.Fatalf("ephemeral work query output = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveWorkQueryManualPrefersRoutedQueueBeforeReadyAssigned(t *testing.T) {
+	a := Agent{Name: "worker", Dir: "foundations"}
+	out := runEffectiveWorkQuery(t, a, map[string]string{
+		"GC_SESSION_ORIGIN": "manual",
+		"GC_SESSION_NAME":   "worker-session",
+		"GC_ALIAS":          "foundations/worker-manual-1",
+	}, `#!/bin/sh
+set -eu
+case "$*" in
+  *"list --status in_progress"*)
+    printf '[]'
+    ;;
+  *"ready --metadata-field gc.routed_to=foundations/worker --unassigned --exclude-type=epic"*)
+    printf '[{"id":"fo-routed"}]'
+    ;;
+  *"ready --assignee="*)
+    printf '[{"id":"fo-assigned"}]'
+    ;;
+  *)
+    printf '[]'
+    ;;
+esac
+`)
+	if got, want := strings.TrimSpace(out), `[{"id":"fo-routed"}]`; got != want {
+		t.Fatalf("manual work query output = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveWorkQueryNamedKeepsReadyAssignedBeforeRoutedQueue(t *testing.T) {
+	a := Agent{Name: "worker", Dir: "foundations"}
+	out := runEffectiveWorkQuery(t, a, map[string]string{
+		"GC_SESSION_ORIGIN": "named",
+		"GC_SESSION_NAME":   "worker-session",
+		"GC_ALIAS":          "foundations/worker",
+	}, `#!/bin/sh
+set -eu
+case "$*" in
+  *"list --status in_progress"*)
+    printf '[]'
+    ;;
+  *"ready --metadata-field gc.routed_to=foundations/worker --unassigned --exclude-type=epic"*)
+    printf '[{"id":"fo-routed"}]'
+    ;;
+  *"ready --assignee="*)
+    printf '[{"id":"fo-assigned"}]'
+    ;;
+  *)
+    printf '[]'
+    ;;
+esac
+`)
+	if got, want := strings.TrimSpace(out), `[{"id":"fo-assigned"}]`; got != want {
+		t.Fatalf("named work query output = %q, want %q", got, want)
+	}
+}
+
 func TestEffectiveWorkQueryControlDispatcherIncludesLegacyWorkflowControlRoute(t *testing.T) {
 	a := Agent{Name: ControlDispatcherAgentName, Dir: "gascity"}
 	got := a.EffectiveWorkQuery()

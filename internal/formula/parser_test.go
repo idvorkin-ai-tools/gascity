@@ -1,6 +1,7 @@
 package formula
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2853,5 +2854,174 @@ title = "Test"
 		if v.Description != "A required variable" {
 			t.Errorf("required_var.Description = %q, want 'A required variable'", v.Description)
 		}
+	}
+}
+
+func TestParseFileRecordsResolvedSourcePathAndPackRoot(t *testing.T) {
+	dir := t.TempDir()
+	realPackRoot := filepath.Join(dir, "packs", "demo")
+	formulasDir := filepath.Join(realPackRoot, "formulas")
+	if err := os.MkdirAll(formulasDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(formulas): %v", err)
+	}
+	realPath := filepath.Join(formulasDir, "work.formula.toml")
+	writeFormulaFile(t, realPath, `
+formula = "work"
+version = 1
+type = "workflow"
+`)
+
+	linkedPackRoot := filepath.Join(dir, "linked-pack")
+	if err := os.Symlink(realPackRoot, linkedPackRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	parser := NewParser()
+	formula, err := parser.ParseFile(filepath.Join(linkedPackRoot, "formulas", "work.formula.toml"))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if got := formula.SourcePath; got != realPath {
+		t.Fatalf("SourcePath = %q, want %q", got, realPath)
+	}
+	if got := formula.PackRoot; got != realPackRoot {
+		t.Fatalf("PackRoot = %q, want %q", got, realPackRoot)
+	}
+}
+
+func TestResolvePreservesInheritedStepSourceProvenance(t *testing.T) {
+	dir := t.TempDir()
+	formulasDir := filepath.Join(dir, "formulas")
+	if err := os.MkdirAll(formulasDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(formulas): %v", err)
+	}
+	writeFormulaFile(t, filepath.Join(formulasDir, "parent.toml"), `
+formula = "parent"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "parent-step"
+title = "Parent"
+`)
+	writeFormulaFile(t, filepath.Join(formulasDir, "child.toml"), `
+formula = "child"
+version = 1
+type = "workflow"
+extends = ["parent"]
+
+[[steps]]
+id = "child-step"
+title = "Child"
+`)
+
+	parser := NewParser(formulasDir)
+	child, err := parser.LoadByName("child")
+	if err != nil {
+		t.Fatalf("LoadByName(child): %v", err)
+	}
+	resolved, err := parser.Resolve(child)
+	if err != nil {
+		t.Fatalf("Resolve(child): %v", err)
+	}
+	if got, want := resolved.SourcePath, filepath.Join(formulasDir, "child.toml"); got != want {
+		t.Fatalf("resolved SourcePath = %q, want %q", got, want)
+	}
+	if got, want := resolved.PackRoot, dir; got != want {
+		t.Fatalf("resolved PackRoot = %q, want %q", got, want)
+	}
+	if len(resolved.Steps) != 2 {
+		t.Fatalf("len(Steps) = %d, want 2", len(resolved.Steps))
+	}
+	if got, want := resolved.Steps[0].SourcePath, filepath.Join(formulasDir, "parent.toml"); got != want {
+		t.Fatalf("parent step SourcePath = %q, want %q", got, want)
+	}
+	if got, want := resolved.Steps[0].PackRoot, dir; got != want {
+		t.Fatalf("parent step PackRoot = %q, want %q", got, want)
+	}
+	if got, want := resolved.Steps[1].SourcePath, filepath.Join(formulasDir, "child.toml"); got != want {
+		t.Fatalf("child step SourcePath = %q, want %q", got, want)
+	}
+}
+
+func TestExtractVariablesIgnoresPackRootIntrinsic(t *testing.T) {
+	formula := &Formula{
+		Description: "Build {{pack_root}} {{component}}",
+		Steps: []*Step{{
+			ID:    "step",
+			Title: "Do {{pack_root}} {{component}}",
+		}},
+	}
+	got := ExtractVariables(formula)
+	want := []string{"component"}
+	if len(got) != len(want) {
+		t.Fatalf("ExtractVariables = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ExtractVariables = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestValidateRejectsPackRootVarDeclaration(t *testing.T) {
+	formula := &Formula{
+		Formula: "work",
+		Version: 1,
+		Type:    TypeWorkflow,
+		Vars: map[string]*VarDef{
+			PackRootIntrinsic: {Description: "nope"},
+		},
+	}
+	if err := formula.Validate(); err == nil {
+		t.Fatal("Validate succeeded, want pack_root declaration error")
+	}
+}
+
+func TestCompileRejectsPackRootInCompileTimeFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFormulaFile(t, filepath.Join(dir, "work.toml"), `
+formula = "work"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "step"
+title = "Step"
+condition = "{{pack_root}}"
+`)
+	_, err := Compile(context.Background(), "work", []string{dir}, nil)
+	if err == nil {
+		t.Fatal("Compile succeeded, want pack_root compile-time validation error")
+	}
+	if !strings.Contains(err.Error(), PackRootIntrinsic) {
+		t.Fatalf("Compile error = %v, want pack_root mention", err)
+	}
+}
+
+func TestCompileRejectsCallerPackRootVar(t *testing.T) {
+	dir := t.TempDir()
+	writeFormulaFile(t, filepath.Join(dir, "work.toml"), `
+formula = "work"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "step"
+title = "Step"
+`)
+	_, err := Compile(context.Background(), "work", []string{dir}, map[string]string{PackRootIntrinsic: "override"})
+	if err == nil {
+		t.Fatal("Compile succeeded, want caller pack_root rejection")
+	}
+	if !strings.Contains(err.Error(), PackRootIntrinsic) {
+		t.Fatalf("Compile error = %v, want pack_root mention", err)
+	}
+}
+
+func writeFormulaFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatalf("write formula %s: %v", path, err)
 	}
 }

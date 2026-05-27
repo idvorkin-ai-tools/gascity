@@ -36,7 +36,7 @@ func AuthScopeRoot(cityRoot, scopeRoot string, target contract.DoltConnectionTar
 func Resolve(scopeRoot, fallbackUser, host string, port int) Resolved {
 	overridePath := strings.TrimSpace(os.Getenv("BEADS_CREDENTIALS_FILE"))
 	return Resolved{
-		User:                    resolveUser(fallbackUser),
+		User:                    resolveUser(scopeRoot, fallbackUser),
 		Password:                resolvePassword(scopeRoot, host, port, overridePath),
 		CredentialsFileOverride: overridePath,
 	}
@@ -60,14 +60,17 @@ func ResolveFromEnv(scopeRoot, fallbackUser string, env map[string]string) Resol
 	}
 	envPass := strings.TrimSpace(env["BEADS_DOLT_PASSWORD"])
 	return Resolved{
-		User:                    resolveUser(fallbackUser),
+		User:                    resolveUser(scopeRoot, fallbackUser),
 		Password:                resolvePasswordWithEnv(envPass, scopeRoot, host, port, overridePath),
 		CredentialsFileOverride: overridePath,
 	}
 }
 
-func resolveUser(fallbackUser string) string {
+func resolveUser(scopeRoot, fallbackUser string) string {
 	if user := strings.TrimSpace(os.Getenv("GC_DOLT_USER")); user != "" {
+		return user
+	}
+	if user := ReadStoreLocalUser(scopeRoot); user != "" {
 		return user
 	}
 	return strings.TrimSpace(fallbackUser)
@@ -110,6 +113,18 @@ func ReadStoreLocalPassword(scopeRoot string) string {
 		return ""
 	}
 	return readSimpleEnvValue(filepath.Join(scopeRoot, ".beads", ".env"), "BEADS_DOLT_PASSWORD")
+}
+
+// ReadStoreLocalUser returns the Dolt user from a scope-local .beads/.env file.
+func ReadStoreLocalUser(scopeRoot string) string {
+	if strings.TrimSpace(scopeRoot) == "" {
+		return ""
+	}
+	envPath := filepath.Join(scopeRoot, ".beads", ".env")
+	if user := readSimpleEnvValue(envPath, "GC_DOLT_USER"); user != "" {
+		return user
+	}
+	return readSimpleEnvValue(envPath, "BEADS_DOLT_SERVER_USER")
 }
 
 func readSimpleEnvValue(path, key string) string {

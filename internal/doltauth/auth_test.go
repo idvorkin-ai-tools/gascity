@@ -68,6 +68,20 @@ func TestResolveUsesStoreLocalPasswordBeforeCredentialsFile(t *testing.T) {
 	}
 }
 
+func TestResolveUsesStoreLocalUserBeforeFallback(t *testing.T) {
+	scopeRoot := t.TempDir()
+	writeStoreUser(t, scopeRoot, "store-user")
+	t.Setenv("GC_DOLT_USER", "")
+	t.Setenv("GC_DOLT_PASSWORD", "")
+	t.Setenv("BEADS_DOLT_PASSWORD", "")
+	t.Setenv("BEADS_CREDENTIALS_FILE", "")
+
+	resolved := Resolve(scopeRoot, "fallback-user", "db.example.com", 3307)
+	if resolved.User != "store-user" {
+		t.Fatalf("User = %q, want store-user", resolved.User)
+	}
+}
+
 func TestResolveUsesCredentialsFileFallback(t *testing.T) {
 	scopeRoot := t.TempDir()
 	credentialsPath := writeCredentialsFile(t, "db.example.com", 3307, "credentials-secret")
@@ -160,6 +174,16 @@ func writeStorePassword(t *testing.T, scopeRoot, password string) {
 		t.Fatalf("MkdirAll(.beads): %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(scopeRoot, ".beads", ".env"), []byte("BEADS_DOLT_PASSWORD="+password+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(.env): %v", err)
+	}
+}
+
+func writeStoreUser(t *testing.T, scopeRoot, user string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(scopeRoot, ".beads"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.beads): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scopeRoot, ".beads", ".env"), []byte("GC_DOLT_USER="+user+"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(.env): %v", err)
 	}
 }

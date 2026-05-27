@@ -205,10 +205,12 @@ func ApplyFragmentRecipeGraphControls(fragment *FragmentRecipe) {
 			}
 		}
 		controls = append(controls, RecipeStep{
-			ID:       controlID,
-			Title:    "Finalize scope for " + step.Title,
-			Type:     "task",
-			Metadata: meta,
+			ID:         controlID,
+			Title:      "Finalize scope for " + step.Title,
+			Type:       "task",
+			Metadata:   meta,
+			SourcePath: step.SourcePath,
+			PackRoot:   step.PackRoot,
 		})
 		controlDeps = append(controlDeps, RecipeDep{
 			StepID:      controlID,

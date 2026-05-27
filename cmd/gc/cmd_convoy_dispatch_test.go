@@ -79,6 +79,64 @@ func TestOpenSourceWorkflowStoresSkipsBrokenRigs(t *testing.T) {
 	}
 }
 
+type sourceWorkflowListErrorStore struct {
+	beads.Store
+}
+
+func (s sourceWorkflowListErrorStore) List(beads.ListQuery) ([]beads.Bead, error) {
+	return nil, errors.New("simulated lazy dolt auth failure")
+}
+
+func TestCollectSourceWorkflowMatchesSkipsStoreThatFailsDuringScan(t *testing.T) {
+	cityPath := "/city"
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Rigs: []config.Rig{
+			{Name: "alpha", Path: "rigs/alpha"},
+			{Name: "broken", Path: "rigs/broken"},
+		},
+	}
+	stores := []convoyStoreView{
+		{path: cityPath, store: beads.NewMemStore()},
+		{path: filepath.Join(cityPath, "rigs", "broken"), store: sourceWorkflowListErrorStore{Store: beads.NewMemStore()}},
+	}
+
+	matches, skips, err := collectSourceWorkflowMatchesFromStores(cfg, cityPath, "mc-source", "city:test-city", stores, nil)
+	if err != nil {
+		t.Fatalf("collectSourceWorkflowMatchesFromStores returned err = %v; want tolerance of one lazy-failing store", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches = %#v, want none", matches)
+	}
+	if len(skips) != 1 || !strings.Contains(skips[0].path, "rigs/broken") {
+		t.Fatalf("skips = %#v, want one broken-rig skip", skips)
+	}
+	if !strings.Contains(formatSourceWorkflowStoreSkips(skips), "lazy dolt auth failure") {
+		t.Fatalf("formatted skips = %q, want lazy failure detail", formatSourceWorkflowStoreSkips(skips))
+	}
+}
+
+func TestCollectSourceWorkflowMatchesFailsWhenEveryStoreFailsDuringScan(t *testing.T) {
+	cityPath := "/city"
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+	}
+	stores := []convoyStoreView{
+		{path: cityPath, store: sourceWorkflowListErrorStore{Store: beads.NewMemStore()}},
+	}
+
+	_, skips, err := collectSourceWorkflowMatchesFromStores(cfg, cityPath, "mc-source", "city:test-city", stores, nil)
+	if err == nil {
+		t.Fatal("collectSourceWorkflowMatchesFromStores returned nil error; want failure when no store can be scanned")
+	}
+	if !strings.Contains(err.Error(), "lazy dolt auth failure") {
+		t.Fatalf("error = %v, want lazy failure detail", err)
+	}
+	if len(skips) != 1 {
+		t.Fatalf("skips = %#v, want one skip", skips)
+	}
+}
+
 func TestOpenSourceWorkflowStoresFailsOnlyWhenEverythingBroken(t *testing.T) {
 	// If every candidate store is unopenable, the singleton check cannot
 	// run safely — surface the first underlying error so the caller knows

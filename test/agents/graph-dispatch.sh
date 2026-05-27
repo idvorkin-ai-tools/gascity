@@ -397,6 +397,7 @@ while true; do
     root_id=$(printf '%s\n' "$bead_json" | json_payload | jq_bead '.metadata["gc.root_bead_id"] // ""')
     source_id=""
     work_dir=""
+    worktree_owner_id=""
     if [ -n "$root_id" ]; then
         if ! root_json=$(timeout 10 bd show --json "$root_id" 2>/dev/null); then
             trace "root-show-failed bead=$bead_id root=$root_id"
@@ -412,6 +413,10 @@ while true; do
             continue
         fi
         work_dir=$(printf '%s\n' "$source_json" | json_payload | jq_bead '.metadata.work_dir')
+        worktree_owner_id=$(printf '%s\n' "$source_json" | json_payload | jq_bead '.metadata["gc.drain_member_id"] // .id')
+        if [ -z "$worktree_owner_id" ]; then
+            worktree_owner_id="$source_id"
+        fi
     fi
 
     if is_currently_blocked "$bead_id" "$root_id"; then
@@ -528,10 +533,10 @@ while true; do
     case "$ref" in
         *.workspace-setup*)
             if [ -z "$work_dir" ]; then
-                work_dir="$GC_CITY/worktrees/$source_id"
+                work_dir="$GC_CITY/worktrees/$worktree_owner_id"
                 mkdir -p "$work_dir"
-                bd update "$source_id" --set-metadata "work_dir=$work_dir"
-                trace "workspace-setup source=$source_id work_dir=$work_dir"
+                bd update "$worktree_owner_id" --set-metadata "work_dir=$work_dir"
+                trace "workspace-setup source=$source_id owner=$worktree_owner_id work_dir=$work_dir"
             fi
             ;;
         *.preflight-tests*)
@@ -563,8 +568,8 @@ while true; do
                 rm -rf "$work_dir"
                 trace "cleanup removed work_dir=$work_dir"
             fi
-            bd update "$source_id" --unset-metadata work_dir
-            trace "cleanup unset work_dir source=$source_id"
+            bd update "$worktree_owner_id" --unset-metadata work_dir
+            trace "cleanup unset work_dir owner=$worktree_owner_id source=$source_id"
             ;;
     esac
 

@@ -945,23 +945,31 @@ func stepToBead(step formula.RecipeStep, vars map[string]string, priorityOverrid
 		stepType = "task"
 	}
 
+	stepVars := make(map[string]string, len(vars)+1)
+	for k, v := range vars {
+		stepVars[k] = v
+	}
+	if step.PackRoot != "" {
+		stepVars[formula.PackRootIntrinsic] = step.PackRoot
+	}
+
 	b := beads.Bead{
-		Title:       formula.Substitute(step.Title, vars),
-		Description: formula.Substitute(step.Description, vars),
+		Title:       formula.Substitute(step.Title, stepVars),
+		Description: formula.Substitute(step.Description, stepVars),
 		Type:        stepType,
 		Priority:    resolveStepPriority(step, priorityOverride),
-		Labels:      substituteLabels(step.Labels, vars),
-		Assignee:    formula.Substitute(step.Assignee, vars),
+		Labels:      substituteLabels(step.Labels, stepVars),
+		Assignee:    formula.Substitute(step.Assignee, stepVars),
 	}
 
 	// Merge step metadata + notes into bead metadata.
 	if len(step.Metadata) > 0 || step.Notes != "" {
 		b.Metadata = make(map[string]string, len(step.Metadata))
 		for k, v := range step.Metadata {
-			b.Metadata[k] = formula.Substitute(v, vars)
+			b.Metadata[k] = formula.Substitute(v, stepVars)
 		}
 		if step.Notes != "" {
-			b.Metadata["notes"] = formula.Substitute(step.Notes, vars)
+			b.Metadata["notes"] = formula.Substitute(step.Notes, stepVars)
 		}
 	}
 
@@ -1127,6 +1135,9 @@ func unresolvedTitleValidationErrorsWithVars(recipe *formula.Recipe, opts Option
 		residual := formula.CheckResidualVars(title)
 		unexplained := make([]string, 0, len(residual))
 		for _, name := range residual {
+			if name == formula.PackRootIntrinsic {
+				continue
+			}
 			if missingRequired[name] {
 				continue
 			}

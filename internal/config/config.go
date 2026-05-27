@@ -2577,7 +2577,13 @@ func (a *Agent) poolDemandTarget() string {
 // was used when assigning.
 //
 // State priority: in_progress+assigned (crash recovery) >
-// ready+assigned (pre-assigned) > ready+unassigned+routed_to (pool).
+// ready+unassigned+routed_to (pool, for ephemeral sessions/controller probes) >
+// ready+assigned (pre-assigned).
+//
+// Ephemeral/manual pool sessions check their routed queue before ready+assigned
+// fallback probes. On remote stores, empty assignee probes are comparatively
+// expensive, while the routed queue is the common path that wakes pool
+// sessions.
 // Formula roots that are themselves executable must be represented as ready()
 // work (for example type=wisp); molecule containers are not routable demand.
 //
@@ -2609,20 +2615,19 @@ func (a *Agent) EffectiveWorkQuery() string {
 			`r=$(bd list --status in_progress --assignee="$id" --exclude-type=epic --json --limit=1 2>/dev/null); ` +
 			`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 			`done; ` +
-			// Tier 2: ready assigned to any of my identifiers (pre-assigned)
+			// Tier 2: ready unassigned routed to this config (shared routed queue).
+			// Only ephemeral/manual sessions and controller probes consume generic config demand.
+			`case "$GC_SESSION_ORIGIN" in ` +
+			`ephemeral|manual|"") ` +
+			`r=$(` + bdReadyPoolDemandShell(target) + ` --limit=1 2>/dev/null); ` +
+			`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0 ;; ` +
+			`esac; ` +
+			// Tier 3: ready assigned to any of my identifiers (pre-assigned)
 			`for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS"; do ` +
 			`[ -z "$id" ] && continue; ` +
 			`r=$(bd ready --assignee="$id" --exclude-type=epic --json --limit=1 2>/dev/null); ` +
 			`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 			`done; ` +
-			// Tier 3: ready unassigned routed to this config (shared routed queue).
-			// Only ephemeral sessions and controller probes consume generic config demand.
-			`case "$GC_SESSION_ORIGIN" in ` +
-			`ephemeral|"") ;; ` +
-			`*) exit 0 ;; ` +
-			`esac; ` +
-			`r=$(` + bdReadyPoolDemandShell(target) + ` --limit=1 2>/dev/null); ` +
-			`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 			`printf "[]"'`
 	}
 	return `sh -c '` +
@@ -2638,7 +2643,17 @@ func (a *Agent) EffectiveWorkQuery() string {
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 		`done; ` +
 		`done; ` +
-		// Tier 2: ready assigned to any of my identifiers (pre-assigned)
+		// Tier 2: ready unassigned routed to this config (shared routed queue),
+		// then the legacy workflow-control route for pre-rename graphs.
+		// Only ephemeral/manual sessions and controller probes consume generic config demand.
+		`case "$GC_SESSION_ORIGIN" in ` +
+		`ephemeral|manual|"") ` +
+		`r=$(` + bdReadyPoolDemandShell(target) + ` --limit=1 2>/dev/null); ` +
+		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
+		`r=$(` + bdReadyPoolDemandShell(legacyTarget) + ` --limit=1 2>/dev/null); ` +
+		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0 ;; ` +
+		`esac; ` +
+		// Tier 3: ready assigned to any of my identifiers (pre-assigned)
 		`for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS"; do ` +
 		`[ -z "$id" ] && continue; ` +
 		`legacy=""; case "$id" in *control-dispatcher) legacy="${id%control-dispatcher}workflow-control";; esac; ` +
@@ -2648,16 +2663,7 @@ func (a *Agent) EffectiveWorkQuery() string {
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 		`done; ` +
 		`done; ` +
-		// Tier 3: ready unassigned routed to this config (shared routed queue),
-		// then the legacy workflow-control route for pre-rename graphs.
-		// Only ephemeral sessions and controller probes consume generic config demand.
-		`case "$GC_SESSION_ORIGIN" in ` +
-		`ephemeral|"") ;; ` +
-		`*) exit 0 ;; ` +
-		`esac; ` +
-		`r=$(` + bdReadyPoolDemandShell(target) + ` --limit=1 2>/dev/null); ` +
-		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
-		bdReadyPoolDemandShell(legacyTarget) + ` --limit=1 2>/dev/null'`
+		`printf "[]"'`
 }
 
 func legacyWorkflowControlQualifiedName(target string) string {

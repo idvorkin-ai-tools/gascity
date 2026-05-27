@@ -698,6 +698,24 @@ func TestStepToBeadSubstitutesMetadataAndNotes(t *testing.T) {
 	}
 }
 
+func TestStepToBeadSubstitutesPackRootIntrinsic(t *testing.T) {
+	bead := stepToBead(formula.RecipeStep{
+		Title:    "{{pack_root}}",
+		Type:     "task",
+		PackRoot: "/tmp/pack",
+		Metadata: map[string]string{
+			"gc.routed_to": "{{pack_root}}",
+		},
+	}, map[string]string{}, nil)
+
+	if got := bead.Title; got != "/tmp/pack" {
+		t.Fatalf("Title = %q, want /tmp/pack", got)
+	}
+	if got := bead.Metadata["gc.routed_to"]; got != "/tmp/pack" {
+		t.Fatalf("gc.routed_to = %q, want /tmp/pack", got)
+	}
+}
+
 func TestInstantiateUsesGraphApplyStoreForRetryLogicalRefs(t *testing.T) {
 	store := &graphApplySpyStore{MemStore: beads.NewMemStore()}
 	prev := IsGraphApplyEnabled()

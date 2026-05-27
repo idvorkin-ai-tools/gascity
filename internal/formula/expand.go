@@ -603,9 +603,13 @@ func MaterializeExpansion(f *Formula, targetID string, vars map[string]string) e
 	}
 
 	target := &Step{
-		ID:          targetID,
-		Title:       f.Formula,
-		Description: f.Description,
+		ID:             targetID,
+		Title:          f.Formula,
+		Description:    f.Description,
+		SourceFormula:  f.Formula,
+		SourceLocation: "materialize-expansion.target",
+		SourcePath:     f.SourcePath,
+		PackRoot:       f.PackRoot,
 	}
 
 	expandedSteps, err := expandStep(target, f.Template, 0, vars)

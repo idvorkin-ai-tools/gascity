@@ -1329,9 +1329,38 @@ func collectSourceWorkflowMatches(cfg *config.City, cityPath, sourceBeadID, sour
 	if err != nil {
 		return nil, skips, err
 	}
+	return collectSourceWorkflowMatchesFromStores(cfg, cityPath, sourceBeadID, sourceStoreRef, stores, skips)
+}
+
+func collectSourceWorkflowMatchesFromStores(
+	cfg *config.City,
+	cityPath, sourceBeadID, sourceStoreRef string,
+	stores []convoyStoreView,
+	skips []sourceWorkflowStoreSkip,
+) ([]sourceWorkflowStoreMatch, []sourceWorkflowStoreSkip, error) {
 	matchesByLabel := map[string]sourceWorkflowStoreMatch{}
 	visited := map[string]struct{}{}
+	skipSeen := map[string]struct{}{}
+	for _, skip := range skips {
+		skipSeen[skip.path] = struct{}{}
+	}
 	cityName := loadedCityName(cfg, cityPath)
+	successfulScans := 0
+	var firstScanErr error
+
+	recordSkip := func(info convoyStoreView, err error) {
+		if err == nil {
+			return
+		}
+		if firstScanErr == nil {
+			firstScanErr = err
+		}
+		if _, ok := skipSeen[info.path]; ok {
+			return
+		}
+		skipSeen[info.path] = struct{}{}
+		skips = append(skips, sourceWorkflowStoreSkip{path: info.path, err: err})
+	}
 
 	var collect func(string, string) error
 	collect = func(currentSourceID, currentSourceStoreRef string) error {
@@ -1351,8 +1380,10 @@ func collectSourceWorkflowMatches(cfg *config.City, cityPath, sourceBeadID, sour
 			visited[visitKey] = struct{}{}
 			roots, err := sourceworkflow.ListLiveRoots(info.store, currentSourceID, currentSourceStoreRef, rootStoreRef)
 			if err != nil {
-				return err
+				recordSkip(info, err)
+				continue
 			}
+			successfulScans++
 			if len(roots) > 0 {
 				beadSet := make([]beads.Bead, 0, len(roots))
 				for _, root := range roots {
@@ -1369,7 +1400,8 @@ func collectSourceWorkflowMatches(cfg *config.City, cityPath, sourceBeadID, sour
 			}
 			children, err := sourceWorkflowChildSources(info.store, currentSourceID, currentSourceStoreRef, rootStoreRef)
 			if err != nil {
-				return err
+				recordSkip(info, err)
+				continue
 			}
 			for _, child := range children {
 				if err := collect(child.ID, rootStoreRef); err != nil {
@@ -1381,6 +1413,9 @@ func collectSourceWorkflowMatches(cfg *config.City, cityPath, sourceBeadID, sour
 	}
 	if err := collect(sourceBeadID, sourceStoreRef); err != nil {
 		return nil, skips, err
+	}
+	if successfulScans == 0 && firstScanErr != nil {
+		return nil, skips, firstScanErr
 	}
 	matches := make([]sourceWorkflowStoreMatch, 0, len(matchesByLabel))
 	for _, match := range matchesByLabel {

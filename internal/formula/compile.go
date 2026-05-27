@@ -60,6 +60,9 @@ func compileFormula(name string, searchPaths []string, vars map[string]string, v
 		return nil, fmt.Errorf("resolving formula %q: %w", name, err)
 	}
 	if validateRuntimeVars && len(vars) > 0 {
+		if err := validateNoReservedUserVars(vars); err != nil {
+			return nil, err
+		}
 		if err := ValidateVars(resolved, vars); err != nil {
 			return nil, err
 		}
@@ -179,11 +182,14 @@ func compileFormula(name string, searchPaths []string, vars map[string]string, v
 
 func validateCompileTimeVars(f *Formula, values map[string]string) error {
 	if f == nil || len(f.Vars) == 0 {
-		return nil
+		return validateNoPackRootCompileTimeUsage(f)
 	}
 	refs := make(map[string]bool)
 	collectCompileTimeVarRefs(f.Steps, refs)
 	collectCompileTimeVarRefs(f.Template, refs)
+	if err := validateNoPackRootCompileTimeUsage(f); err != nil {
+		return err
+	}
 	if len(refs) == 0 {
 		return nil
 	}
@@ -195,6 +201,82 @@ func validateCompileTimeVars(f *Formula, values map[string]string) error {
 		}
 	}
 	return ValidateVarDefs(defs, ApplyDefaults(f, values))
+}
+
+func validateNoReservedUserVars(vars map[string]string) error {
+	if _, ok := vars[PackRootIntrinsic]; ok {
+		return fmt.Errorf("graph.intrinsic variable %q cannot be supplied by the caller", PackRootIntrinsic)
+	}
+	return nil
+}
+
+func validateNoPackRootCompileTimeUsage(f *Formula) error {
+	if f == nil {
+		return nil
+	}
+	var errs []string
+	collectPackRootCompileTimeUsage(f.Steps, &errs)
+	if f.Compose != nil {
+		for i, rule := range f.Compose.Expand {
+			if rule == nil {
+				continue
+			}
+			prefix := fmt.Sprintf("compose.expand[%d]", i)
+			collectPackRootCompileTimeStringRefs(prefix+".target", rule.Target, &errs)
+			collectPackRootCompileTimeStringRefs(prefix+".with", rule.With, &errs)
+			for key, value := range rule.Vars {
+				collectPackRootCompileTimeStringRefs(prefix+".vars."+key, value, &errs)
+			}
+		}
+		for i, rule := range f.Compose.Map {
+			if rule == nil {
+				continue
+			}
+			prefix := fmt.Sprintf("compose.map[%d]", i)
+			collectPackRootCompileTimeStringRefs(prefix+".select", rule.Select, &errs)
+			collectPackRootCompileTimeStringRefs(prefix+".with", rule.With, &errs)
+			for key, value := range rule.Vars {
+				collectPackRootCompileTimeStringRefs(prefix+".vars."+key, value, &errs)
+			}
+		}
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("formula validation failed:\n  - %s", strings.Join(errs, "\n  - "))
+}
+
+func collectPackRootCompileTimeUsage(steps []*Step, errs *[]string) {
+	for i, step := range steps {
+		if step == nil {
+			continue
+		}
+		prefix := fmt.Sprintf("steps[%d] (%s)", i, step.ID)
+		collectPackRootCompileTimeStringRefs(prefix+".condition", step.Condition, errs)
+		if step.Loop != nil {
+			collectPackRootCompileTimeStringRefs(prefix+".loop.range", step.Loop.Range, errs)
+			collectPackRootCompileTimeStringRefs(prefix+".loop.until", step.Loop.Until, errs)
+		}
+		collectPackRootCompileTimeStringRefs(prefix+".expand", step.Expand, errs)
+		for key, value := range step.ExpandVars {
+			collectPackRootCompileTimeStringRefs(prefix+".expand_vars."+key, value, errs)
+		}
+		if len(step.Children) > 0 {
+			collectPackRootCompileTimeUsage(step.Children, errs)
+		}
+		if step.Loop != nil && len(step.Loop.Body) > 0 {
+			collectPackRootCompileTimeUsage(step.Loop.Body, errs)
+		}
+	}
+}
+
+func collectPackRootCompileTimeStringRefs(path, value string, errs *[]string) {
+	if !strings.Contains(value, "{{") || !strings.Contains(value, PackRootIntrinsic) {
+		return
+	}
+	if strings.Contains(value, "{{"+PackRootIntrinsic+"}}") {
+		*errs = append(*errs, fmt.Sprintf("%s: %s is not available in compile-time formula locations", path, PackRootIntrinsic))
+	}
 }
 
 func collectCompileTimeVarRefs(steps []*Step, refs map[string]bool) {
@@ -236,6 +318,9 @@ func toRecipeWithGraph(f *Formula, graphWorkflow bool) (*Recipe, error) {
 	r := &Recipe{
 		Name:        f.Formula,
 		Description: f.Description,
+		Source:      f.Source,
+		SourcePath:  f.SourcePath,
+		PackRoot:    f.PackRoot,
 		Vars:        f.Vars,
 		Phase:       f.Phase,
 		Pour:        f.Pour,
@@ -272,6 +357,8 @@ func toRecipeWithGraph(f *Formula, graphWorkflow bool) (*Recipe, error) {
 		Description: rootDesc,
 		Type:        rootType,
 		IsRoot:      true,
+		SourcePath:  f.SourcePath,
+		PackRoot:    f.PackRoot,
 	}
 	if graphWorkflow {
 		rootStep.Metadata = map[string]string{"gc.kind": "workflow"}
@@ -410,6 +497,8 @@ func flattenSteps(steps []*Step, parentID string, idMapping map[string]string, o
 			Labels:      step.Labels,
 			Assignee:    step.Assignee,
 			Metadata:    metadata,
+			SourcePath:  step.SourcePath,
+			PackRoot:    step.PackRoot,
 		}
 
 		// Add gate label for waits_for field
@@ -447,6 +536,8 @@ func flattenSteps(steps []*Step, parentID string, idMapping map[string]string, o
 					ID:      step.Gate.ID,
 					Timeout: step.Gate.Timeout,
 				},
+				SourcePath: step.SourcePath,
+				PackRoot:   step.PackRoot,
 			}
 			defP := 2
 			gateStep.Priority = &defP

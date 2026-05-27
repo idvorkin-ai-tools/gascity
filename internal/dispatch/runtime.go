@@ -70,8 +70,9 @@ const (
 	// sub-second Dolt read-after-write visibility lag for newly created scope
 	// bodies. When ProcessOptions.Context is set, retry waits exit promptly
 	// on cancellation.
-	scopeBodyResolveAttempts   = 5
-	scopeBodyResolveRetryDelay = 100 * time.Millisecond
+	scopeBodyResolveAttempts    = 5
+	scopeBodyResolveRetryDelay  = 100 * time.Millisecond
+	scopeBodyResolveFreshWindow = 2 * time.Minute
 )
 
 const workflowFinalizeErrorMetadataKey = "gc.last_finalize_error"
@@ -180,7 +181,7 @@ func processScopeCheck(store beads.Store, bead beads.Bead, opts ProcessOptions) 
 		return ControlResult{}, fmt.Errorf("%s: missing gc.scope_ref", bead.ID)
 	}
 	body, err := tracePhase(opts, bead.ID, "resolve-body", func() (beads.Bead, error) {
-		return resolveScopeBody(store, rootID, scopeRef, bead.ID, opts)
+		return resolveScopeBody(store, rootID, scopeRef, bead, opts)
 	})
 	if err != nil {
 		if errors.Is(err, errScopeBodyMissing) {
@@ -1000,7 +1001,7 @@ func reconcileTerminalScopedMemberWithOptions(store beads.Store, bead beads.Bead
 	if rootID == "" {
 		return ControlResult{}, fmt.Errorf("%s: missing gc.root_bead_id", bead.ID)
 	}
-	body, err := resolveScopeBody(store, rootID, scopeRef, bead.ID, opts)
+	body, err := resolveScopeBody(store, rootID, scopeRef, bead, opts)
 	if err != nil {
 		if errors.Is(err, errScopeBodyMissing) {
 			return ControlResult{}, fmt.Errorf("%w: %w", ErrControlGraphMalformed, err)
@@ -1080,13 +1081,15 @@ func resolveBlockingSubjectID(store beads.Store, beadID string) (string, error) 
 	return "", fmt.Errorf("no blocking dependency")
 }
 
-func resolveScopeBody(store beads.Store, rootID, scopeRef, traceID string, opts ProcessOptions) (beads.Bead, error) {
+func resolveScopeBody(store beads.Store, rootID, scopeRef string, control beads.Bead, opts ProcessOptions) (beads.Bead, error) {
 	ctx := opts.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	traceID := control.ID
+	attempts := scopeBodyResolveAttemptLimit(control)
 	var lastErr error
-	for attempt := 1; attempt <= scopeBodyResolveAttempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		bead, err := resolveScopeBodyOnce(store, rootID, scopeRef)
 		if err == nil {
 			opts.tracef("scope-check bead=%s resolve-body attempt=%d root=%s scope=%s result=ok body=%s", traceID, attempt, rootID, scopeRef, bead.ID)
@@ -1098,7 +1101,7 @@ func resolveScopeBody(store beads.Store, rootID, scopeRef, traceID string, opts 
 		}
 		opts.tracef("scope-check bead=%s resolve-body attempt=%d root=%s scope=%s result=retry reason=missing_body err=%v", traceID, attempt, rootID, scopeRef, err)
 		lastErr = err
-		if attempt < scopeBodyResolveAttempts {
+		if attempt < attempts {
 			timer := time.NewTimer(scopeBodyResolveRetryDelay)
 			select {
 			case <-ctx.Done():
@@ -1113,8 +1116,15 @@ func resolveScopeBody(store beads.Store, rootID, scopeRef, traceID string, opts 
 			}
 		}
 	}
-	opts.tracef("scope-check bead=%s resolve-body attempts=%d root=%s scope=%s result=exhausted err=%v", traceID, scopeBodyResolveAttempts, rootID, scopeRef, lastErr)
+	opts.tracef("scope-check bead=%s resolve-body attempts=%d root=%s scope=%s result=exhausted err=%v", traceID, attempts, rootID, scopeRef, lastErr)
 	return beads.Bead{}, lastErr
+}
+
+func scopeBodyResolveAttemptLimit(control beads.Bead) int {
+	if !control.CreatedAt.IsZero() && time.Since(control.CreatedAt) > scopeBodyResolveFreshWindow {
+		return 1
+	}
+	return scopeBodyResolveAttempts
 }
 
 func resolveScopeBodyOnce(store beads.Store, rootID, scopeRef string) (beads.Bead, error) {

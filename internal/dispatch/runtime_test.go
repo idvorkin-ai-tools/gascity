@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gastownhall/gascity/internal/beads"
@@ -722,6 +723,75 @@ func TestProcessScopeCheckRetriesTransientMissingScopeBody(t *testing.T) {
 	}
 }
 
+func TestProcessScopeCheckDoesNotRetryOldMissingScopeBody(t *testing.T) {
+	t.Parallel()
+
+	mem := beads.NewMemStore()
+	workflow := mustCreateWorkflowBead(t, mem, beads.Bead{
+		Title: "workflow",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":             "workflow",
+			"gc.formula_contract": "graph.v2",
+		},
+	})
+	body := mustCreateWorkflowBead(t, mem, beads.Bead{
+		Title: "body",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":         "scope",
+			"gc.scope_role":   "body",
+			"gc.root_bead_id": workflow.ID,
+			"gc.step_ref":     "demo.body",
+		},
+	})
+	step := mustCreateWorkflowBead(t, mem, beads.Bead{
+		Title:  "preflight",
+		Type:   "task",
+		Status: "closed",
+		Metadata: map[string]string{
+			"gc.root_bead_id": workflow.ID,
+			"gc.scope_ref":    "body",
+			"gc.scope_role":   "member",
+			"gc.outcome":      "pass",
+		},
+	})
+	control := mustCreateWorkflowBead(t, mem, beads.Bead{
+		Title: "Finalize scope for preflight",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":         "scope-check",
+			"gc.root_bead_id": workflow.ID,
+			"gc.scope_ref":    "body",
+			"gc.scope_role":   "control",
+		},
+	})
+	control.CreatedAt = time.Now().Add(-scopeBodyResolveFreshWindow - time.Second)
+	mustDepAdd(t, mem, control.ID, step.ID, "blocks")
+
+	store := &transientMissingScopeBodyStore{
+		MemStore:  mem,
+		bodyID:    body.ID,
+		rootID:    workflow.ID,
+		hideReads: scopeBodyResolveAttempts,
+	}
+	var trace bytes.Buffer
+	_, err := ProcessControl(store, control, ProcessOptions{
+		Tracef: func(format string, args ...any) {
+			fmt.Fprintf(&trace, format+"\n", args...) //nolint:errcheck // test buffer
+		},
+	})
+	if !errors.Is(err, ErrControlGraphMalformed) {
+		t.Fatalf("ProcessControl error = %v, want %v", err, ErrControlGraphMalformed)
+	}
+	if store.hiddenReads >= store.hideReads {
+		t.Fatalf("hiddenReads = %d, want stale control to stop before full retry window %d", store.hiddenReads, store.hideReads)
+	}
+	if got := trace.String(); !strings.Contains(got, "attempts=1") {
+		t.Fatalf("trace = %q, want attempts=1", got)
+	}
+}
+
 func TestResolveScopeBodyStopsRetryWhenContextCanceled(t *testing.T) {
 	t.Parallel()
 
@@ -753,7 +823,7 @@ func TestResolveScopeBodyStopsRetryWhenContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := resolveScopeBody(store, workflow.ID, "body", "control", ProcessOptions{Context: ctx})
+	_, err := resolveScopeBody(store, workflow.ID, "body", beads.Bead{ID: "control"}, ProcessOptions{Context: ctx})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("resolveScopeBody error = %v, want context.Canceled", err)
 	}

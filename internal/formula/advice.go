@@ -171,6 +171,8 @@ func adviceStepToStep(as *AdviceStep, target *Step) *Step {
 		SourceFormula: target.SourceFormula, // Inherit source formula from target
 		// SourceLocation will be "advice" to indicate this came from advice transformation
 		SourceLocation: "advice",
+		SourcePath:     target.SourcePath,
+		PackRoot:       target.PackRoot,
 	}
 }
 

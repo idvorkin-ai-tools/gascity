@@ -52,11 +52,15 @@ func applyGraphControls(f *Formula, includeWorkflowFinalize bool) {
 			}
 		}
 		controls = append(controls, &Step{
-			ID:       step.ID + "-fanout",
-			Title:    "Expand fanout for " + step.Title,
-			Type:     "task",
-			Needs:    []string{step.ID},
-			Metadata: controlMetadata,
+			ID:             step.ID + "-fanout",
+			Title:          "Expand fanout for " + step.Title,
+			Type:           "task",
+			Needs:          []string{step.ID},
+			Metadata:       controlMetadata,
+			SourceFormula:  step.SourceFormula,
+			SourceLocation: "graph.fanout",
+			SourcePath:     step.SourcePath,
+			PackRoot:       step.PackRoot,
 		})
 	}
 
@@ -78,11 +82,15 @@ func applyGraphControls(f *Formula, includeWorkflowFinalize bool) {
 			}
 		}
 		controls = append(controls, &Step{
-			ID:       controlID,
-			Title:    "Finalize scope for " + step.Title,
-			Type:     "task",
-			Needs:    []string{step.ID},
-			Metadata: controlMetadata,
+			ID:             controlID,
+			Title:          "Finalize scope for " + step.Title,
+			Type:           "task",
+			Needs:          []string{step.ID},
+			Metadata:       controlMetadata,
+			SourceFormula:  step.SourceFormula,
+			SourceLocation: "graph.scope-check",
+			SourcePath:     step.SourcePath,
+			PackRoot:       step.PackRoot,
 		})
 	}
 
@@ -107,6 +115,10 @@ func applyGraphControls(f *Formula, includeWorkflowFinalize bool) {
 		Metadata: map[string]string{
 			"gc.kind": "workflow-finalize",
 		},
+		SourceFormula:  f.Formula,
+		SourceLocation: "graph.workflow-finalize",
+		SourcePath:     f.SourcePath,
+		PackRoot:       f.PackRoot,
 	})
 	f.Steps = sortGraphSteps(f.Steps)
 }

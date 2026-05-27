@@ -694,15 +694,13 @@ func workflowServeControlReadyQuery(agentCfg config.Agent, controlSessionNames .
 		queryPrefix += ` GC_CONTROL_LEGACY_TARGET=` + shellquote.Quote(legacy)
 	}
 	query := queryPrefix + ` sh -c '` +
-		`tmp=$(mktemp); trap "rm -f \"$tmp\"" EXIT; ` +
-		`emit_ready() { r=$("$@" 2>/dev/null || true); [ -n "$r" ] && [ "$r" != "[]" ] && printf "%s\n" "$r" >> "$tmp"; }; ` +
+		`tmp=$(mktemp -d); trap "rm -rf \"$tmp\"" EXIT; idx=0; pids=""; files=""; seen=""; ` +
+		`emit_ready() { idx=$((idx + 1)); out="$tmp/$idx.json"; files="$files $out"; (r=$("$@" 2>/dev/null || true); [ -n "$r" ] && [ "$r" != "[]" ] && printf "%s\n" "$r" > "$out") & pids="$pids $!"; }; ` +
+		`emit_assignee() { cand="$1"; [ -z "$cand" ] && return; case " $seen " in *" $cand "*) return;; esac; seen="$seen $cand"; emit_ready bd --readonly --sandbox ready --assignee="$cand" --json --limit=` + limit + `; }; ` +
 		`for id in "$GC_CONTROL_SESSION_NAME" "$GC_SESSION_NAME" "$GC_ALIAS" "$GC_CONTROL_TARGET" "$GC_SESSION_ID"; do ` +
 		`[ -z "$id" ] && continue; ` +
 		`legacy=""; case "$id" in *control-dispatcher) legacy="${id%control-dispatcher}workflow-control";; esac; ` +
-		`for cand in "$id" "$legacy"; do ` +
-		`[ -z "$cand" ] && continue; ` +
-		`emit_ready bd --readonly --sandbox ready --assignee="$cand" --json --limit=` + limit + `; ` +
-		`done; ` +
+		`emit_assignee "$id"; emit_assignee "$legacy"; ` +
 		`done; ` +
 		`emit_ready bd --readonly --sandbox ready --metadata-field "gc.routed_to=$GC_CONTROL_TARGET" --unassigned --json --limit=` + limit + `; `
 	if legacy := workflowServeLegacyControlRoute(target); legacy != "" {
@@ -710,7 +708,7 @@ func workflowServeControlReadyQuery(agentCfg config.Agent, controlSessionNames .
 	} else {
 		query += `:; `
 	}
-	query += `[ -s "$tmp" ] && jq -s "reduce add[] as \$item ([]; if any(.[]; .id == \$item.id) then . else . + [\$item] end)" "$tmp" || printf "[]"` + `'`
+	query += `for pid in $pids; do wait "$pid" || true; done; inputs=""; for f in $files; do [ -s "$f" ] && inputs="$inputs $f"; done; [ -n "$inputs" ] && jq -s "reduce add[] as \$item ([]; if any(.[]; .id == \$item.id) then . else . + [\$item] end)" $inputs || printf "[]"` + `'`
 	return query
 }
 

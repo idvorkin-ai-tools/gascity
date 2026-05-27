@@ -27,6 +27,10 @@ func newSourceSpecStep(step *Step) (*Step, error) {
 			"gc.spec_for":     step.ID,
 			"gc.spec_for_ref": step.ID,
 		},
+		SourceFormula:  step.SourceFormula,
+		SourceLocation: step.SourceLocation,
+		SourcePath:     step.SourcePath,
+		PackRoot:       step.PackRoot,
 	}, nil
 }
 
