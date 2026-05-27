@@ -108,8 +108,11 @@ func (a *Adapter) Open(ctx context.Context, cfg coordstore.Config) error {
 	}
 	// Keep all connections warm — connection churn is the dominant read latency
 	// when MaxIdleConns < MaxOpenConns causes constant open/close on every op.
-	readDB.SetMaxOpenConns(20)
-	readDB.SetMaxIdleConns(20)
+	// Pool size is env-tunable (default 20) so the ga-2s6sz variant runs can
+	// reduce reader concurrency without rebuilding.
+	readPool := readPoolSizeFromEnv()
+	readDB.SetMaxOpenConns(readPool)
+	readDB.SetMaxIdleConns(readPool)
 	readDB.SetConnMaxIdleTime(5 * time.Minute)
 
 	writeDB.SetMaxIdleConns(1)
@@ -138,6 +141,24 @@ func (a *Adapter) Open(ctx context.Context, cfg coordstore.Config) error {
 	a.dbPath = path
 	a.startCheckpointer(checkpointIntervalFromEnv())
 	return nil
+}
+
+// readPoolSizeFromEnv resolves the size of the read connection pool from
+// COORDSTORE_SQLITE_READ_POOL_SIZE. Default 20 preserves the production
+// configuration; ga-2s6sz variant runs use lower values (e.g. 8) to test
+// whether reader-side contention drives the FilterScan + Ready p99 tail.
+// Invalid or non-positive values fall back to the default.
+func readPoolSizeFromEnv() int {
+	const defaultSize = 20
+	v := strings.TrimSpace(os.Getenv("COORDSTORE_SQLITE_READ_POOL_SIZE"))
+	if v == "" {
+		return defaultSize
+	}
+	n := 0
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
+		return defaultSize
+	}
+	return n
 }
 
 // checkpointIntervalFromEnv resolves the cadence for the background
