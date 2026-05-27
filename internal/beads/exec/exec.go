@@ -161,6 +161,7 @@ func (w *beadWire) toBead() beads.Bead {
 		Type:        w.Type,
 		Priority:    priority,
 		CreatedAt:   w.CreatedAt,
+		UpdatedAt:   w.UpdatedAt,
 		Assignee:    w.Assignee,
 		From:        w.From,
 		ParentID:    w.ParentID,
@@ -308,7 +309,7 @@ func (s *Store) List(query beads.ListQuery) ([]beads.Bead, error) {
 		if query.Type != "" {
 			args = append(args, "--type="+query.Type)
 		}
-		if query.Limit > 0 && query.CreatedBefore.IsZero() {
+		if query.Limit > 0 && query.CreatedBefore.IsZero() && query.UpdatedBefore.IsZero() {
 			args = append(args, "--limit="+strconv.Itoa(query.Limit))
 		}
 		out, err = s.run(nil, args...)

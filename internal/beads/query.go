@@ -68,6 +68,7 @@ type ListQuery struct {
 	ParentID      string
 	Metadata      map[string]string
 	CreatedBefore time.Time
+	UpdatedBefore time.Time
 	Limit         int
 	IncludeClosed bool
 	AllowScan     bool
@@ -108,7 +109,8 @@ func (q ListQuery) HasFilter() bool {
 		q.Assignee != "" ||
 		q.ParentID != "" ||
 		len(q.Metadata) > 0 ||
-		!q.CreatedBefore.IsZero()
+		!q.CreatedBefore.IsZero() ||
+		!q.UpdatedBefore.IsZero()
 }
 
 // IncludesClosed reports whether the query may return closed beads.
@@ -155,7 +157,17 @@ func (q ListQuery) Matches(b Bead) bool {
 	if !q.CreatedBefore.IsZero() && !b.CreatedAt.Before(q.CreatedBefore) {
 		return false
 	}
+	if !q.UpdatedBefore.IsZero() && !beadUpdatedAtForQuery(b).Before(q.UpdatedBefore) {
+		return false
+	}
 	return true
+}
+
+func beadUpdatedAtForQuery(b Bead) time.Time {
+	if !b.UpdatedAt.IsZero() {
+		return b.UpdatedAt
+	}
+	return b.CreatedAt
 }
 
 func beadHasLabel(b Bead, want string) bool {

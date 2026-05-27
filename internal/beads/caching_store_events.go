@@ -274,6 +274,9 @@ func mergeCacheEventPatch(base, patch Bead, fields map[string]json.RawMessage) B
 	if hasCacheEventField(fields, "created_at") {
 		merged.CreatedAt = patch.CreatedAt
 	}
+	if hasCacheEventField(fields, "updated_at") {
+		merged.UpdatedAt = patch.UpdatedAt
+	}
 	if hasCacheEventField(fields, "assignee") {
 		merged.Assignee = patch.Assignee
 	}
@@ -323,6 +326,9 @@ func cacheEventConflictsCurrent(current, patch Bead, fields map[string]json.RawM
 		}
 	}
 	if hasCacheEventField(fields, "assignee") && current.Assignee != patch.Assignee {
+		return true
+	}
+	if hasCacheEventField(fields, "updated_at") && !current.UpdatedAt.Equal(patch.UpdatedAt) {
 		return true
 	}
 	if hasCacheEventField(fields, "description") && current.Description != patch.Description {
@@ -486,6 +492,7 @@ func beadChanged(old, fresh Bead, skipLabels bool) bool {
 		old.Type != fresh.Type ||
 		!intPtrEqual(old.Priority, fresh.Priority) ||
 		!old.CreatedAt.Equal(fresh.CreatedAt) ||
+		!old.UpdatedAt.Equal(fresh.UpdatedAt) ||
 		old.Assignee != fresh.Assignee ||
 		old.From != fresh.From ||
 		old.ParentID != fresh.ParentID ||

@@ -24,6 +24,7 @@ type Bead struct {
 	Type         string            `json:"issue_type"` // "task" default; matches bd wire format
 	Priority     *int              `json:"priority,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at,omitempty"`
 	Assignee     string            `json:"assignee,omitempty"`
 	From         string            `json:"from,omitempty"`
 	ParentID     string            `json:"parent,omitempty"`      // step → molecule; matches bd wire format
@@ -162,11 +163,11 @@ func HasOpt(opts []QueryOpt, want QueryOpt) bool {
 
 // Store is the interface for bead persistence. Implementations must assign
 // unique non-empty IDs, default Status to "open", default Type to "task",
-// and set CreatedAt on Create. The ID format is implementation-specific
+// and set CreatedAt and UpdatedAt on Create. The ID format is implementation-specific
 // (e.g. "gc-1" for FileStore, "bd-XXXX" for BdStore).
 type Store interface {
 	// Create persists a new bead. The caller provides Title and optionally
-	// Type; the store fills in ID, Status, and CreatedAt. Returns the
+	// Type; the store fills in ID, Status, CreatedAt, and UpdatedAt. Returns the
 	// complete bead.
 	Create(b Bead) (Bead, error)
 

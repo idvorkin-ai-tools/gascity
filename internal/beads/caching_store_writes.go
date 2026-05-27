@@ -99,11 +99,15 @@ func (c *CachingStore) Close(id string) error {
 	c.mu.Lock()
 	c.noteLocalMutationLocked(id)
 	if b, ok := c.beads[id]; ok {
-		b.Status = "closed"
-		c.beads[id] = b
+		if found {
+			c.beads[id] = cloneBead(closed)
+		} else {
+			b.Status = "closed"
+			c.beads[id] = b
+			closed = cloneBead(b)
+		}
 		delete(c.dirty, id)
 		delete(c.deletedSeq, id)
-		closed = cloneBead(b)
 		found = true
 		c.markFreshLocked(time.Now())
 		c.updateStatsLocked()
@@ -141,11 +145,15 @@ func (c *CachingStore) Reopen(id string) error {
 	c.mu.Lock()
 	c.noteLocalMutationLocked(id)
 	if b, ok := c.beads[id]; ok {
-		b.Status = "open"
-		c.beads[id] = b
+		if found {
+			c.beads[id] = cloneBead(reopened)
+		} else {
+			b.Status = "open"
+			c.beads[id] = b
+			reopened = cloneBead(b)
+		}
 		delete(c.dirty, id)
 		delete(c.deletedSeq, id)
-		reopened = cloneBead(b)
 		found = true
 		c.markFreshLocked(time.Now())
 		c.updateStatsLocked()
@@ -236,21 +244,32 @@ func (c *CachingStore) SetMetadata(id, key, value string) error {
 	if err := c.backing.SetMetadata(id, key, value); err != nil {
 		return err
 	}
+	fresh, refreshErr := c.backing.Get(id)
 
 	c.mu.Lock()
 	c.noteLocalMutationLocked(id)
-	if b, ok := c.beads[id]; ok {
+	if refreshErr == nil {
+		c.beads[id] = cloneBead(fresh)
+		c.deps[id] = depsFromBeadFields(fresh)
+		delete(c.dirty, id)
+		delete(c.deletedSeq, id)
+	} else if b, ok := c.beads[id]; ok {
 		if b.Metadata == nil {
 			b.Metadata = make(map[string]string)
 		}
 		b.Metadata[key] = value
 		c.beads[id] = b
-		delete(c.dirty, id)
+		c.dirty[id] = struct{}{}
 		delete(c.deletedSeq, id)
+	} else {
+		c.dirty[id] = struct{}{}
 	}
 	c.markFreshLocked(time.Now())
 	c.updateStatsLocked()
 	c.mu.Unlock()
+	if refreshErr != nil {
+		c.recordProblem("refresh bead after metadata update", fmt.Errorf("%s: %w", id, refreshErr))
+	}
 	return nil
 }
 
@@ -271,10 +290,16 @@ func (c *CachingStore) SetMetadataBatch(id string, kvs map[string]string) error 
 	if err := c.backing.SetMetadataBatch(id, kvs); err != nil {
 		return err
 	}
+	fresh, refreshErr := c.backing.Get(id)
 
 	c.mu.Lock()
 	c.noteLocalMutationLocked(id)
-	if b, ok := c.beads[id]; ok {
+	if refreshErr == nil {
+		c.beads[id] = cloneBead(fresh)
+		c.deps[id] = depsFromBeadFields(fresh)
+		delete(c.dirty, id)
+		delete(c.deletedSeq, id)
+	} else if b, ok := c.beads[id]; ok {
 		if b.Metadata == nil {
 			b.Metadata = make(map[string]string, len(kvs))
 		}
@@ -282,12 +307,17 @@ func (c *CachingStore) SetMetadataBatch(id string, kvs map[string]string) error 
 			b.Metadata[k] = v
 		}
 		c.beads[id] = b
-		delete(c.dirty, id)
+		c.dirty[id] = struct{}{}
 		delete(c.deletedSeq, id)
+	} else {
+		c.dirty[id] = struct{}{}
 	}
 	c.markFreshLocked(time.Now())
 	c.updateStatsLocked()
 	c.mu.Unlock()
+	if refreshErr != nil {
+		c.recordProblem("refresh bead after metadata batch update", fmt.Errorf("%s: %w", id, refreshErr))
+	}
 	return nil
 }
 

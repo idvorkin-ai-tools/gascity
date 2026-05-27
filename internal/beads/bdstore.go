@@ -415,6 +415,7 @@ type bdIssue struct {
 	IssueType    string       `json:"issue_type"`
 	Priority     *int         `json:"priority,omitempty"`
 	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 	Assignee     string       `json:"assignee"`
 	From         string       `json:"from"`
 	ParentID     string       `json:"parent"`
@@ -540,6 +541,7 @@ func (b *bdIssue) toBead() Bead {
 		Type:         b.IssueType,
 		Priority:     cloneIntPtr(b.Priority),
 		CreatedAt:    b.CreatedAt.Truncate(time.Second),
+		UpdatedAt:    b.UpdatedAt.Truncate(time.Second),
 		Assignee:     b.Assignee,
 		From:         from,
 		ParentID:     parentID,
@@ -1401,6 +1403,9 @@ func (s *BdStore) List(query ListQuery) ([]Bead, error) {
 	if !query.CreatedBefore.IsZero() {
 		args = append(args, "--created-before", query.CreatedBefore.Format(time.RFC3339Nano))
 	}
+	if !query.UpdatedBefore.IsZero() {
+		args = append(args, "--updated-before", query.UpdatedBefore.Format(time.RFC3339Nano))
+	}
 	args = append(args, "--include-infra", "--include-gates", "--limit", fmt.Sprintf("%d", limit))
 	if query.ParentID != "" {
 		args = append(args, "--parent", query.ParentID)
@@ -1488,7 +1493,7 @@ func (s *BdStore) listEphemeral(query ListQuery) ([]Bead, error) {
 }
 
 func canApplyWispsServerLimit(query ListQuery) bool {
-	return query.Sort == SortDefault && query.CreatedBefore.IsZero() && len(query.Metadata) == 0
+	return query.Sort == SortDefault && query.CreatedBefore.IsZero() && query.UpdatedBefore.IsZero() && len(query.Metadata) == 0
 }
 
 func appendBdQueryClause(clauses []string, serverFilteredOnly bool, field, value string) ([]string, bool) {

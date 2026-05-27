@@ -102,3 +102,53 @@ func TestListQueryCreatedBeforeFiltersBeforeLimit(t *testing.T) {
 		t.Fatalf("got[0].ID = %q, want older-1", got[0].ID)
 	}
 }
+
+func TestListQueryUpdatedBeforeUsesUpdatedAtWithCreatedFallback(t *testing.T) {
+	base := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	items := []Bead{
+		{
+			ID:        "created-old-updated-new",
+			Title:     "created old updated new",
+			Status:    "closed",
+			CreatedAt: base.Add(-2 * time.Hour),
+			UpdatedAt: base.Add(2 * time.Hour),
+			Labels:    []string{"stale"},
+		},
+		{
+			ID:        "updated-old",
+			Title:     "updated old",
+			Status:    "closed",
+			CreatedAt: base.Add(-3 * time.Hour),
+			UpdatedAt: base.Add(-time.Hour),
+			Labels:    []string{"stale"},
+		},
+		{
+			ID:        "legacy-created-old",
+			Title:     "legacy created old",
+			Status:    "closed",
+			CreatedAt: base.Add(-30 * time.Minute),
+			Labels:    []string{"stale"},
+		},
+		{
+			ID:        "legacy-created-new",
+			Title:     "legacy created new",
+			Status:    "closed",
+			CreatedAt: base.Add(30 * time.Minute),
+			Labels:    []string{"stale"},
+		},
+	}
+
+	got := ApplyListQuery(items, ListQuery{
+		Label:         "stale",
+		UpdatedBefore: base,
+		IncludeClosed: true,
+		Sort:          SortCreatedAsc,
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].ID != "updated-old" || got[1].ID != "legacy-created-old" {
+		t.Fatalf("got IDs = [%s %s], want [updated-old legacy-created-old]", got[0].ID, got[1].ID)
+	}
+}

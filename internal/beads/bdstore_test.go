@@ -2452,6 +2452,38 @@ func TestBdStoreListCreatedBeforeForwardsFilter(t *testing.T) {
 	}
 }
 
+func TestBdStoreListUpdatedBeforeForwardsFilter(t *testing.T) {
+	before := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	updatedAt := before.Add(-time.Minute)
+	wantCmd := `bd list --json --label=order-run:digest --all --updated-before ` +
+		before.Format(time.RFC3339Nano) + ` --include-infra --include-gates --limit 1`
+	runner := fakeRunner(map[string]struct {
+		out []byte
+		err error
+	}{
+		wantCmd: {
+			out: []byte(`[{"id":"bd-old","title":"digest wisp","status":"closed","issue_type":"task","created_at":"2026-05-27T10:00:00Z","updated_at":"` + updatedAt.Format(time.RFC3339Nano) + `","labels":["order-run:digest"]}]`),
+		},
+	})
+	s := beads.NewBdStore("/city", runner)
+	got, err := s.List(beads.ListQuery{
+		Label:         "order-run:digest",
+		UpdatedBefore: before,
+		Limit:         1,
+		IncludeClosed: true,
+		Sort:          beads.SortCreatedDesc,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "bd-old" {
+		t.Fatalf("List returned %+v, want bd-old", got)
+	}
+	if !got[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("UpdatedAt = %s, want %s", got[0].UpdatedAt, updatedAt)
+	}
+}
+
 func TestBdStoreListByLabelEmpty(t *testing.T) {
 	runner := fakeRunner(map[string]struct {
 		out []byte

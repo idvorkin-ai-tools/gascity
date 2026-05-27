@@ -76,6 +76,7 @@ func (s *HQStore) normalizeCreateLocked(b Bead) Bead {
 	if b.CreatedAt.IsZero() {
 		b.CreatedAt = time.Now()
 	}
+	b.UpdatedAt = b.CreatedAt
 	return b
 }
 
@@ -107,12 +108,17 @@ func (s *HQStore) Update(id string, opts UpdateOpts) error {
 		s.counters.UpdateNotFound.Add(1)
 		return fmt.Errorf("updating bead %q: %w", id, ErrNotFound)
 	}
+	if !hasUpdateOpts(opts) {
+		return nil
+	}
+	now := time.Now()
 	wasClosed := b.Status == "closed"
 	applyHQUpdate(&b, opts)
+	b.UpdatedAt = now
 	if opts.Status != nil {
 		switch {
 		case b.Status == "closed" && !wasClosed:
-			hqStampClosedAt(&b, time.Now())
+			hqStampClosedAt(&b, now)
 		case b.Status != "closed" && wasClosed:
 			hqClearClosedAt(&b)
 		}
@@ -137,8 +143,10 @@ func (s *HQStore) Close(id string) error {
 	if b.Status == "closed" {
 		return nil
 	}
+	now := time.Now()
 	b.Status = "closed"
-	hqStampClosedAt(&b, time.Now())
+	b.UpdatedAt = now
+	hqStampClosedAt(&b, now)
 	s.upsertOwnedLocked(b)
 	return nil
 }
@@ -159,6 +167,7 @@ func (s *HQStore) Reopen(id string) error {
 		return nil
 	}
 	b.Status = "open"
+	b.UpdatedAt = time.Now()
 	hqClearClosedAt(&b)
 	s.upsertOwnedLocked(b)
 	return nil
@@ -183,7 +192,9 @@ func (s *HQStore) CloseAll(ids []string, metadata map[string]string) (int, error
 		if !ok || b.Status == "closed" {
 			continue
 		}
+		now := time.Now()
 		b.Status = "closed"
+		b.UpdatedAt = now
 		if len(metadata) > 0 {
 			if b.Metadata == nil {
 				b.Metadata = make(map[string]string, len(metadata))
@@ -192,7 +203,7 @@ func (s *HQStore) CloseAll(ids []string, metadata map[string]string) (int, error
 				b.Metadata[k] = v
 			}
 		}
-		hqStampClosedAt(&b, time.Now())
+		hqStampClosedAt(&b, now)
 		s.upsertOwnedLocked(b)
 		changed++
 	}
@@ -402,6 +413,7 @@ func (s *HQStore) SetMetadataBatch(id string, kvs map[string]string) error {
 	for k, v := range kvs {
 		b.Metadata[k] = v
 	}
+	b.UpdatedAt = time.Now()
 	s.upsertOwnedLocked(b)
 	return nil
 }

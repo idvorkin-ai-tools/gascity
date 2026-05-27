@@ -34,6 +34,100 @@ func TestHQStoreConformance(t *testing.T) {
 	beadstest.RunCreationOrderTests(t, factory)
 }
 
+func TestHQStoreStampsUpdatedAt(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(t *testing.T, s *beads.HQStore, id string) error
+	}{
+		{
+			name: "Update",
+			mut: func(t *testing.T, s *beads.HQStore, id string) error {
+				t.Helper()
+				title := "renamed"
+				return s.Update(id, beads.UpdateOpts{Title: &title})
+			},
+		},
+		{
+			name: "Close",
+			mut: func(t *testing.T, s *beads.HQStore, id string) error {
+				t.Helper()
+				return s.Close(id)
+			},
+		},
+		{
+			name: "Reopen",
+			mut: func(t *testing.T, s *beads.HQStore, id string) error {
+				t.Helper()
+				if err := s.Close(id); err != nil {
+					return err
+				}
+				before, err := s.Get(id)
+				if err != nil {
+					return err
+				}
+				waitPast(t, before.UpdatedAt)
+				return s.Reopen(id)
+			},
+		},
+		{
+			name: "CloseAll",
+			mut: func(t *testing.T, s *beads.HQStore, id string) error {
+				t.Helper()
+				_, err := s.CloseAll([]string{id}, map[string]string{"closed_by": "test"})
+				return err
+			},
+		},
+		{
+			name: "SetMetadataBatch",
+			mut: func(t *testing.T, s *beads.HQStore, id string) error {
+				t.Helper()
+				return s.SetMetadataBatch(id, map[string]string{"key": "value"})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := beads.OpenHQStore(t.TempDir(), beads.WithHQStoreSnapshotInterval(0))
+			if err != nil {
+				t.Fatalf("OpenHQStore: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := store.Shutdown(); err != nil {
+					t.Errorf("Shutdown: %v", err)
+				}
+			})
+
+			created, err := store.Create(beads.Bead{Title: "test"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if created.UpdatedAt.IsZero() {
+				t.Fatal("Create returned zero UpdatedAt")
+			}
+			if !created.UpdatedAt.Equal(created.CreatedAt) {
+				t.Fatalf("Create UpdatedAt = %s, want CreatedAt %s", created.UpdatedAt, created.CreatedAt)
+			}
+
+			before, err := store.Get(created.ID)
+			if err != nil {
+				t.Fatalf("Get before mutation: %v", err)
+			}
+			waitPast(t, before.UpdatedAt)
+			if err := tt.mut(t, store, created.ID); err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+			after, err := store.Get(created.ID)
+			if err != nil {
+				t.Fatalf("Get after mutation: %v", err)
+			}
+			if !after.UpdatedAt.After(before.UpdatedAt) {
+				t.Fatalf("UpdatedAt = %s, want after %s", after.UpdatedAt, before.UpdatedAt)
+			}
+		})
+	}
+}
+
 func TestHQStoreRecoversFlushedSnapshotAfterSIGKILL(t *testing.T) {
 	if os.Getenv("HQSTORE_SIGKILL_HELPER") == "1" {
 		hqStoreSIGKILLHelper(t)
