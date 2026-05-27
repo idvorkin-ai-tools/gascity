@@ -142,7 +142,15 @@ func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApp
 		if recipe.RootOnly && i > 0 {
 			break
 		}
-		node, err := recipeStepToGraphNode(step, vars, priorityOverride)
+		titleOverride := ""
+		if step.IsRoot {
+			titleOverride = opts.Title
+		}
+		stepVars, err := runtimeVarsForMaterializedStep(step, vars, titleOverride)
+		if err != nil {
+			return nil, false, "", err
+		}
+		node, err := recipeStepToGraphNode(step, stepVars, priorityOverride)
 		if err != nil {
 			return nil, false, "", err
 		}
@@ -155,7 +163,7 @@ func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApp
 				node.Type = "molecule"
 			}
 			if opts.Title != "" {
-				node.Title = formula.Substitute(opts.Title, vars)
+				node.Title = formula.Substitute(opts.Title, stepVars)
 			}
 			if opts.ParentID != "" && step.Metadata["gc.kind"] != "workflow" {
 				node.ParentID = opts.ParentID
@@ -316,7 +324,11 @@ func buildFragmentApplyPlan(store beads.Store, recipe *formula.FragmentRecipe, o
 	}
 
 	for _, step := range recipe.Steps {
-		node, err := recipeStepToGraphNode(step, vars, priorityOverride)
+		stepVars, err := runtimeVarsForMaterializedStep(step, vars, "")
+		if err != nil {
+			return nil, err
+		}
+		node, err := recipeStepToGraphNode(step, stepVars, priorityOverride)
 		if err != nil {
 			return nil, err
 		}
@@ -398,8 +410,8 @@ func buildFragmentApplyPlan(store beads.Store, recipe *formula.FragmentRecipe, o
 	return plan, nil
 }
 
-func recipeStepToGraphNode(step formula.RecipeStep, vars map[string]string, priorityOverride *int) (beads.GraphApplyNode, error) { //nolint:unparam // error return reserved for future validation
-	b := stepToBead(step, vars, priorityOverride)
+func recipeStepToGraphNode(step formula.RecipeStep, stepVars map[string]string, priorityOverride *int) (beads.GraphApplyNode, error) { //nolint:unparam // error return reserved for future validation
+	b := stepToBead(step, stepVars, priorityOverride)
 	return beads.GraphApplyNode{
 		Key:         step.ID,
 		Title:       b.Title,

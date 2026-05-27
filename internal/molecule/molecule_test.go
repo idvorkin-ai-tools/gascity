@@ -294,6 +294,272 @@ func (s *graphApplySpyStore) ApplyGraphPlan(_ context.Context, plan *beads.Graph
 	return &beads.GraphApplyResult{IDs: ids}, nil
 }
 
+func TestInstantiateSubstitutesStepPackRootInMaterializedFields(t *testing.T) {
+	packRoot := t.TempDir()
+	sourcePath := filepath.Join(packRoot, "formulas", "workflow.toml")
+	recipe := &formula.Recipe{
+		Name: "pack-root",
+		Steps: []formula.RecipeStep{
+			{ID: "pack-root", Title: "Root {{pack_root}}", Type: "molecule", IsRoot: true, PackRoot: packRoot},
+			{
+				ID:          "pack-root.step",
+				Title:       "Use {{pack_root}}",
+				Description: "Read {{pack_root}}/README.md and keep {{agent_note}}",
+				Notes:       "Notes from {{pack_root}}",
+				Type:        "bug",
+				Labels:      []string{"root:{{pack_root}}"},
+				Assignee:    "{{pack_root}}/agent",
+				SourcePath:  sourcePath,
+				PackRoot:    packRoot,
+				Metadata: map[string]string{
+					"asset":            "{{pack_root}}/assets/context.md",
+					"gc.check_path":    "{{pack_root}}/checks/pass.sh",
+					"gc.step_timeout":  "1m",
+					"gc.check_timeout": "30s",
+				},
+			},
+		},
+		Deps: []formula.RecipeDep{{StepID: "pack-root.step", DependsOnID: "pack-root", Type: "parent-child"}},
+	}
+
+	store := beads.NewMemStore()
+	result, err := Instantiate(context.Background(), store, recipe, Options{})
+	if err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+	root, err := store.Get(result.RootID)
+	if err != nil {
+		t.Fatalf("Get root: %v", err)
+	}
+	if got, want := root.Title, "Root "+packRoot; got != want {
+		t.Fatalf("root title = %q, want %q", got, want)
+	}
+	step, err := store.Get(result.IDMapping["pack-root.step"])
+	if err != nil {
+		t.Fatalf("Get step: %v", err)
+	}
+	if got, want := step.Title, "Use "+packRoot; got != want {
+		t.Fatalf("step title = %q, want %q", got, want)
+	}
+	if got, want := step.Description, "Read "+packRoot+"/README.md and keep {{agent_note}}"; got != want {
+		t.Fatalf("step description = %q, want %q", got, want)
+	}
+	if got, want := step.Metadata["notes"], "Notes from "+packRoot; got != want {
+		t.Fatalf("step notes metadata = %q, want %q", got, want)
+	}
+	if got, want := step.Labels, []string{"root:" + packRoot}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("step labels = %#v, want %#v", got, want)
+	}
+	if got, want := step.Assignee, packRoot+"/agent"; got != want {
+		t.Fatalf("step assignee = %q, want %q", got, want)
+	}
+	if got, want := step.Metadata["asset"], packRoot+"/assets/context.md"; got != want {
+		t.Fatalf("step asset metadata = %q, want %q", got, want)
+	}
+	if got, want := step.Metadata["gc.check_path"], packRoot+"/checks/pass.sh"; got != want {
+		t.Fatalf("step gc.check_path = %q, want %q", got, want)
+	}
+
+	gaStore := &graphApplySpyStore{MemStore: beads.NewMemStore()}
+	prev := IsGraphApplyEnabled()
+	SetGraphApplyEnabled(true)
+	t.Cleanup(func() { SetGraphApplyEnabled(prev) })
+
+	if _, err := Instantiate(context.Background(), gaStore, recipe, Options{}); err != nil {
+		t.Fatalf("graph-apply Instantiate: %v", err)
+	}
+	node := nodeByKey(gaStore.plan.Nodes, "pack-root.step")
+	if node == nil {
+		t.Fatal("graph-apply plan missing pack-root.step")
+	}
+	if got, want := node.Title, "Use "+packRoot; got != want {
+		t.Fatalf("graph node title = %q, want %q", got, want)
+	}
+	if got, want := node.Description, "Read "+packRoot+"/README.md and keep {{agent_note}}"; got != want {
+		t.Fatalf("graph node description = %q, want %q", got, want)
+	}
+	if got, want := node.Metadata["asset"], packRoot+"/assets/context.md"; got != want {
+		t.Fatalf("graph node asset metadata = %q, want %q", got, want)
+	}
+}
+
+func TestInstantiateRejectsPackRootWithoutProvenanceBeforeCreatingBeads(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "workflow.toml")
+	recipe := &formula.Recipe{
+		Name: "pack-root-missing",
+		Steps: []formula.RecipeStep{
+			{ID: "pack-root-missing", Title: "Root", Type: "molecule", IsRoot: true},
+			{
+				ID:          "pack-root-missing.step",
+				Title:       "Child",
+				Description: "Read {{pack_root}}/README.md",
+				Type:        "task",
+				SourcePath:  sourcePath,
+			},
+		},
+		Deps: []formula.RecipeDep{{StepID: "pack-root-missing.step", DependsOnID: "pack-root-missing", Type: "parent-child"}},
+	}
+
+	store := beads.NewMemStore()
+	_, err := Instantiate(context.Background(), store, recipe, Options{})
+	if err == nil {
+		t.Fatal("Instantiate succeeded, want pack_root provenance error")
+	}
+	if !strings.Contains(err.Error(), "pack-root-missing.step") ||
+		!strings.Contains(err.Error(), sourcePath) ||
+		!strings.Contains(err.Error(), "pack_root") {
+		t.Fatalf("Instantiate error = %v, want step, source, and pack_root", err)
+	}
+	items, listErr := store.List(beads.ListQuery{AllowScan: true})
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(items) != 0 {
+		t.Fatalf("created %d beads before pack_root error, want 0", len(items))
+	}
+
+	gaStore := &graphApplySpyStore{MemStore: beads.NewMemStore()}
+	prev := IsGraphApplyEnabled()
+	SetGraphApplyEnabled(true)
+	t.Cleanup(func() { SetGraphApplyEnabled(prev) })
+
+	_, err = Instantiate(context.Background(), gaStore, recipe, Options{})
+	if err == nil {
+		t.Fatal("graph-apply Instantiate succeeded, want pack_root provenance error")
+	}
+	if gaStore.calls != 0 {
+		t.Fatalf("ApplyGraphPlan calls = %d, want 0", gaStore.calls)
+	}
+}
+
+func TestInstantiatePackRootSubstitutionKeepsResidualValidation(t *testing.T) {
+	packRoot := t.TempDir()
+	recipe := &formula.Recipe{
+		Name: "pack-root-residual",
+		Steps: []formula.RecipeStep{
+			{
+				ID:       "pack-root-residual",
+				Title:    "Root {{pack_root}} {{missing}}",
+				Type:     "molecule",
+				IsRoot:   true,
+				PackRoot: packRoot,
+			},
+		},
+	}
+
+	_, err := Instantiate(context.Background(), beads.NewMemStore(), recipe, Options{})
+	if err == nil {
+		t.Fatal("Instantiate succeeded, want residual title variable error")
+	}
+	if !strings.Contains(err.Error(), "missing") || strings.Contains(err.Error(), "pack_root, missing") {
+		t.Fatalf("Instantiate error = %v, want missing residual after pack_root substitution", err)
+	}
+}
+
+func TestValidateRecipeRuntimeVarsRejectsCallerPackRootVar(t *testing.T) {
+	recipe := &formula.Recipe{
+		Name: "work",
+		Steps: []formula.RecipeStep{{
+			ID:    "step",
+			Title: "Step",
+		}},
+	}
+
+	err := ValidateRecipeRuntimeVars(recipe, Options{
+		Vars: map[string]string{formula.PackRootIntrinsic: "override"},
+	})
+	if err == nil {
+		t.Fatal("ValidateRecipeRuntimeVars succeeded, want caller pack_root rejection")
+	}
+	if !strings.Contains(err.Error(), formula.PackRootIntrinsic) {
+		t.Fatalf("ValidateRecipeRuntimeVars error = %v, want pack_root mention", err)
+	}
+}
+
+func TestInstantiateFragmentSubstitutesAndValidatesStepPackRoot(t *testing.T) {
+	packRoot := t.TempDir()
+	fragment := &formula.FragmentRecipe{
+		Name: "pack-root-fragment",
+		Steps: []formula.RecipeStep{
+			{
+				ID:          "pack-root-fragment.step",
+				Title:       "Fan out {{pack_root}}",
+				Description: "{{pack_root}}/fragment.md",
+				Type:        "task",
+				Labels:      []string{"root:{{pack_root}}"},
+				PackRoot:    packRoot,
+				Metadata:    map[string]string{"gc.check_path": "{{pack_root}}/checks/pass.sh"},
+			},
+		},
+	}
+
+	store := beads.NewMemStore()
+	root, err := store.Create(beads.Bead{Title: "root", Type: "molecule"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := IsGraphApplyEnabled()
+	SetGraphApplyEnabled(false)
+	t.Cleanup(func() { SetGraphApplyEnabled(prev) })
+
+	result, err := InstantiateFragment(context.Background(), store, fragment, FragmentOptions{RootID: root.ID})
+	if err != nil {
+		t.Fatalf("InstantiateFragment: %v", err)
+	}
+	step, err := store.Get(result.IDMapping["pack-root-fragment.step"])
+	if err != nil {
+		t.Fatalf("Get fragment step: %v", err)
+	}
+	if got, want := step.Title, "Fan out "+packRoot; got != want {
+		t.Fatalf("fragment title = %q, want %q", got, want)
+	}
+	if got, want := step.Metadata["gc.check_path"], packRoot+"/checks/pass.sh"; got != want {
+		t.Fatalf("fragment check path = %q, want %q", got, want)
+	}
+
+	gaStore := &graphApplySpyStore{MemStore: beads.NewMemStore()}
+	graphRoot, err := gaStore.Create(beads.Bead{Title: "root", Type: "molecule"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetGraphApplyEnabled(true)
+	if _, err := InstantiateFragment(context.Background(), gaStore, fragment, FragmentOptions{RootID: graphRoot.ID}); err != nil {
+		t.Fatalf("graph-apply InstantiateFragment: %v", err)
+	}
+	node := nodeByKey(gaStore.plan.Nodes, "pack-root-fragment.step")
+	if node == nil {
+		t.Fatal("graph-apply fragment plan missing step")
+	}
+	if got, want := node.Title, "Fan out "+packRoot; got != want {
+		t.Fatalf("graph fragment title = %q, want %q", got, want)
+	}
+
+	missing := &formula.FragmentRecipe{
+		Name: "pack-root-fragment-missing",
+		Steps: []formula.RecipeStep{
+			{
+				ID:          "pack-root-fragment-missing.step",
+				Title:       "Fan out",
+				Description: "{{pack_root}}/fragment.md",
+				Type:        "task",
+				SourcePath:  sourcePathForTest(t, "fragment.toml"),
+			},
+		},
+	}
+	_, err = InstantiateFragment(context.Background(), store, missing, FragmentOptions{RootID: root.ID})
+	if err == nil {
+		t.Fatal("InstantiateFragment succeeded, want pack_root provenance error")
+	}
+	if !strings.Contains(err.Error(), "pack-root-fragment-missing.step") || !strings.Contains(err.Error(), "pack_root") {
+		t.Fatalf("InstantiateFragment error = %v, want step and pack_root", err)
+	}
+}
+
+func sourcePathForTest(t *testing.T, name string) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), name)
+}
+
 func TestInstantiateSimple(t *testing.T) {
 	store := beads.NewMemStore()
 	recipe := &formula.Recipe{
@@ -698,15 +964,20 @@ func TestStepToBeadSubstitutesMetadataAndNotes(t *testing.T) {
 	}
 }
 
-func TestStepToBeadSubstitutesPackRootIntrinsic(t *testing.T) {
-	bead := stepToBead(formula.RecipeStep{
+func TestRuntimeVarsForMaterializedStepSubstitutesPackRootIntrinsic(t *testing.T) {
+	step := formula.RecipeStep{
 		Title:    "{{pack_root}}",
 		Type:     "task",
 		PackRoot: "/tmp/pack",
 		Metadata: map[string]string{
 			"gc.routed_to": "{{pack_root}}",
 		},
-	}, map[string]string{}, nil)
+	}
+	vars, err := runtimeVarsForMaterializedStep(step, map[string]string{}, "")
+	if err != nil {
+		t.Fatalf("runtimeVarsForMaterializedStep: %v", err)
+	}
+	bead := stepToBead(step, vars, nil)
 
 	if got := bead.Title; got != "/tmp/pack" {
 		t.Fatalf("Title = %q, want /tmp/pack", got)

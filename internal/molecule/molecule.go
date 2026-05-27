@@ -493,6 +493,10 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 	// Merge variable defaults from recipe with caller-provided vars.
 	vars := applyVarDefaults(opts.Vars, recipe.Vars)
 	priorityOverride := clonePriority(opts.PriorityOverride)
+	stepVarsByID, err := runtimeVarsForMaterializedSteps(recipe.Steps, vars, recipe.RootOnly, opts.Title)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build the list of beads to create.
 	idMapping := make(map[string]string, len(recipe.Steps))
@@ -508,7 +512,8 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 			break
 		}
 
-		b := stepToBead(step, vars, priorityOverride)
+		stepVars := stepVarsByID[step.ID]
+		b := stepToBead(step, stepVars, priorityOverride)
 		if opts.DeferAssignees {
 			deferBeadRouting(&b)
 		}
@@ -536,7 +541,7 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 			}
 			b.Ref = recipe.Name
 			if opts.Title != "" {
-				b.Title = formula.Substitute(opts.Title, vars)
+				b.Title = formula.Substitute(opts.Title, stepVars)
 			}
 			if opts.ParentID != "" && step.Metadata["gc.kind"] != "workflow" {
 				b.ParentID = opts.ParentID
@@ -715,6 +720,10 @@ func InstantiateFragment(ctx context.Context, store beads.Store, recipe *formula
 	}
 
 	vars := applyVarDefaults(opts.Vars, recipe.Vars)
+	stepVarsByID, err := runtimeVarsForMaterializedSteps(recipe.Steps, vars, false, "")
+	if err != nil {
+		return nil, err
+	}
 	idMapping := make(map[string]string, len(recipe.Steps))
 	var createdIDs []string
 	createdParentByStep := make(map[string]string, len(recipe.Steps))
@@ -731,7 +740,8 @@ func InstantiateFragment(ctx context.Context, store beads.Store, recipe *formula
 	recipeParentByStep := recipeParentDeps(recipe.Deps)
 
 	for _, step := range recipe.Steps {
-		b := stepToBead(step, vars, priorityOverride)
+		stepVars := stepVarsByID[step.ID]
+		b := stepToBead(step, stepVars, priorityOverride)
 		// Fragment entries stay "task" — unlike formula scaffolding steps,
 		// fanout-expanded fragment beads are actionable work that pool
 		// workers claim from `bd ready`. Do not apply nonRootStepBeadType
@@ -939,18 +949,10 @@ func preservesGraphActionTypes(recipe *formula.Recipe) bool {
 }
 
 // stepToBead converts a RecipeStep to a Bead with variable substitution.
-func stepToBead(step formula.RecipeStep, vars map[string]string, priorityOverride *int) beads.Bead {
+func stepToBead(step formula.RecipeStep, stepVars map[string]string, priorityOverride *int) beads.Bead {
 	stepType := step.Type
 	if stepType == "" {
 		stepType = "task"
-	}
-
-	stepVars := make(map[string]string, len(vars)+1)
-	for k, v := range vars {
-		stepVars[k] = v
-	}
-	if step.PackRoot != "" {
-		stepVars[formula.PackRootIntrinsic] = step.PackRoot
 	}
 
 	b := beads.Bead{
@@ -974,6 +976,88 @@ func stepToBead(step formula.RecipeStep, vars map[string]string, priorityOverrid
 	}
 
 	return b
+}
+
+func runtimeVarsForMaterializedSteps(steps []formula.RecipeStep, vars map[string]string, rootOnly bool, titleOverride string) (map[string]map[string]string, error) {
+	stepVarsByID := make(map[string]map[string]string, len(steps))
+	for i, step := range steps {
+		if rootOnly && i > 0 {
+			break
+		}
+		override := ""
+		if step.IsRoot {
+			override = titleOverride
+		}
+		stepVars, err := runtimeVarsForMaterializedStep(step, vars, override)
+		if err != nil {
+			return nil, err
+		}
+		stepVarsByID[step.ID] = stepVars
+	}
+	return stepVarsByID, nil
+}
+
+func runtimeVarsForMaterializedStep(step formula.RecipeStep, vars map[string]string, titleOverride string) (map[string]string, error) {
+	field, ok := materializedPackRootReference(step, titleOverride)
+	if !ok {
+		return vars, nil
+	}
+	packRoot := strings.TrimSpace(step.PackRoot)
+	if packRoot == "" {
+		source := strings.TrimSpace(step.SourcePath)
+		if source == "" {
+			source = "<unknown source>"
+		}
+		return nil, fmt.Errorf("step %q from %s references {{%s}} in %s but no pack root could be derived from source", step.ID, source, formula.PackRootIntrinsic, field)
+	}
+	stepVars := make(map[string]string, len(vars)+1)
+	for k, v := range vars {
+		stepVars[k] = v
+	}
+	stepVars[formula.PackRootIntrinsic] = packRoot
+	return stepVars, nil
+}
+
+func materializedPackRootReference(step formula.RecipeStep, titleOverride string) (string, bool) {
+	title := step.Title
+	if titleOverride != "" {
+		title = titleOverride
+	}
+	if containsPackRootTemplateVar(title) {
+		return "title", true
+	}
+	if containsPackRootTemplateVar(step.Description) {
+		return "description", true
+	}
+	if containsPackRootTemplateVar(step.Notes) {
+		return "notes", true
+	}
+	if containsPackRootTemplateVar(step.Assignee) {
+		return "assignee", true
+	}
+	for _, label := range step.Labels {
+		if containsPackRootTemplateVar(label) {
+			return "labels", true
+		}
+	}
+	for key, value := range step.Metadata {
+		if containsPackRootTemplateVar(value) {
+			return "metadata " + key, true
+		}
+	}
+	return "", false
+}
+
+func containsPackRootTemplateVar(s string) bool {
+	if !strings.Contains(s, "{{") || !strings.Contains(s, formula.PackRootIntrinsic) {
+		return false
+	}
+	for _, residual := range formula.CheckResidualVars(s) {
+		if residual == formula.PackRootIntrinsic {
+			return true
+		}
+	}
+	return false
 }
 
 func preserveExecutableRootType(step formula.RecipeStep) bool {
@@ -1088,6 +1172,9 @@ func applyVarDefaults(vars map[string]string, defs map[string]*formula.VarDef) m
 func ValidateRecipeRuntimeVars(recipe *formula.Recipe, opts Options) error {
 	validationVars := runtimeValidationVars(recipe, opts)
 	validationErrs, missingRequired := formula.CollectVarValidationErrors(recipe.Vars, validationVars)
+	if err := formula.ValidateNoReservedUserVars(validationVars); err != nil {
+		validationErrs = append([]string{err.Error()}, validationErrs...)
+	}
 	titleErrs := unresolvedTitleValidationErrorsWithVars(recipe, opts, validationVars, missingRequired)
 	if len(validationErrs) == 0 && len(titleErrs) == 0 {
 		return nil
