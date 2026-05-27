@@ -63,6 +63,21 @@ type CachingStore struct {
 	applyEventBeforeCommitForTest func()
 }
 
+// Shutdown closes the backing store when it exposes a shutdown hook.
+func (c *CachingStore) Shutdown() error {
+	if c == nil {
+		return nil
+	}
+	c.StopReconciler()
+	closer, ok := c.backing.(interface {
+		Shutdown() error
+	})
+	if !ok {
+		return nil
+	}
+	return closer.Shutdown()
+}
+
 type cacheState int
 
 const (

@@ -142,12 +142,8 @@ func startBeadsLifecycle(cityPath, _ string, cfg *config.City, stderr io.Writer)
 	if bboltActive {
 		path := bboltCityStorePath(cityPath)
 		fmt.Fprintf(stderr, "coord-store: using bbolt backend %s\n", path) //nolint:errcheck // best-effort startup signal
-		store, err := openBboltCityStore(cityPath, config.EffectiveHQPrefix(cfg))
-		if err != nil {
-			return err
-		}
-		if err := store.Shutdown(); err != nil {
-			return fmt.Errorf("bbolt bead store: close %s: %w", path, err)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("bbolt bead store: prepare %s: %w", path, err)
 		}
 		if len(cfg.Rigs) > 0 {
 			allRigs := collectRigRoutes(cityPath, cfg)

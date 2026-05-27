@@ -54,7 +54,7 @@ func TestOpenCityStoreAtIgnoresBboltBackendForFileProvider(t *testing.T) {
 	}
 }
 
-func TestStartBeadsLifecycleBboltCreatesStoreAndSkipsManagedDolt(t *testing.T) {
+func TestStartBeadsLifecycleBboltPreparesStoreDirAndSkipsManagedDolt(t *testing.T) {
 	cityDir := writeBboltBackendTestCity(t, "bbolt", "")
 	cfg, err := loadCityConfig(cityDir, &bytes.Buffer{})
 	if err != nil {
@@ -68,8 +68,8 @@ func TestStartBeadsLifecycleBboltCreatesStoreAndSkipsManagedDolt(t *testing.T) {
 	if got := stderr.String(); !strings.Contains(got, "coord-store: using bbolt backend "+bboltCityStorePath(cityDir)) {
 		t.Fatalf("stderr = %q, want bbolt backend line with store path", got)
 	}
-	if _, err := os.Stat(bboltCityStorePath(cityDir)); err != nil {
-		t.Fatalf("stat bbolt store: %v", err)
+	if _, err := os.Stat(filepath.Dir(bboltCityStorePath(cityDir))); err != nil {
+		t.Fatalf("stat bbolt store dir: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cityDir, ".beads")); !os.IsNotExist(err) {
 		t.Fatalf("managed dolt .beads directory should not be created, stat err = %v", err)

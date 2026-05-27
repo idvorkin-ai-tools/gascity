@@ -11,6 +11,28 @@ import (
 	"time"
 )
 
+type shutdownRecordingStore struct {
+	Store
+	shutdowns int
+}
+
+func (s *shutdownRecordingStore) Shutdown() error {
+	s.shutdowns++
+	return nil
+}
+
+func TestCachingStoreShutdownDelegatesToBacking(t *testing.T) {
+	backing := &shutdownRecordingStore{Store: NewMemStore()}
+	cache := NewCachingStoreForTest(backing, nil)
+
+	if err := cache.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if backing.shutdowns != 1 {
+		t.Fatalf("backing shutdowns = %d, want 1", backing.shutdowns)
+	}
+}
+
 func TestCachingStoreRunReconciliationDetectsLabelContentChanges(t *testing.T) {
 	t.Parallel()
 

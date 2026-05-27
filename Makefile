@@ -468,7 +468,7 @@ check-docs:
 # Packages for coverage — exclude noise:
 #   session/tmux: integration-test-only, not meaningful for unit coverage
 #   beadstest: conformance helper, runs under internal/beads coverage
-UNIT_COVER_PKGS := $(shell go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v -e /session/tmux -e /beadstest)
+UNIT_COVER_PKGS = $(shell go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v -e /session/tmux -e /beadstest)
 
 ## test-cover: run fast unit-test coverage without the integration-tagged package sweep
 ## The skipped cmd/gc process-backed scenarios remain covered by

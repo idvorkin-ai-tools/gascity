@@ -545,4 +545,16 @@ func TestDefaultMailProviderUsesStartedCityPath(t *testing.T) {
 	}
 }
 
+func TestDefaultMailProviderSkipsBboltCityStore(t *testing.T) {
+	t.Setenv("GC_MAIL", "")
+	cityDir := writeBboltBackendTestCity(t, "bbolt", "")
+
+	if provider := defaultMailProvider(cityDir); provider != nil {
+		t.Fatalf("defaultMailProvider returned %T, want nil for bbolt backend", provider)
+	}
+	if _, err := os.Stat(bboltCityStorePath(cityDir)); !os.IsNotExist(err) {
+		t.Fatalf("bbolt store should not be opened during warmup mail provider setup, stat err = %v", err)
+	}
+}
+
 var _ io.Writer = (*bytes.Buffer)(nil)

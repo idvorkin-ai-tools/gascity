@@ -194,6 +194,7 @@ func loadProviderSessionSnapshot(ctx sessionProviderContext) *sessionBeadSnapsho
 	if err != nil {
 		return nil
 	}
+	defer func() { _ = closeStoreIfSupported(store) }()
 	all, err := store.ListByLabel(sessionBeadLabel, 0)
 	if err != nil {
 		return nil

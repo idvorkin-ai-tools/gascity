@@ -461,6 +461,9 @@ func defaultMailProvider(cityPath string) mail.Provider {
 	if strings.HasPrefix(name, "exec:") || name == "fake" || name == "fail" {
 		return newCommandMailProviderNamed(name, nil)
 	}
+	if bboltActive, err := cityUsesBboltBackend(cityPath, nil); err == nil && bboltActive {
+		return nil
+	}
 	store, err := openCityStoreAt(cityPath)
 	if err != nil {
 		return nil

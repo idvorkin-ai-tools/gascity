@@ -237,17 +237,29 @@ func newCityRuntime(p CityRuntimeParams) *CityRuntime {
 	// errors immediately after ensureBeadsProvider returns (#753).
 	if sweepStore, err := newCityRuntimeOpenSweepStore(p.CityPath, p.CityPath); err != nil {
 		fmt.Fprintf(p.Stderr, "gc start: order tracking sweep: %v\n", err) //nolint:errcheck // best-effort stderr
-	} else if n, err := sweepOrphanedOrderTrackingRetry(sweepStore, 3, time.Second); err != nil {
-		fmt.Fprintf(p.Stderr, "gc start: order tracking sweep (closed %d): %v\n", n, err) //nolint:errcheck // best-effort stderr
-	} else if n > 0 {
-		fmt.Fprintf(p.Stderr, "gc start: closed %d orphaned order-tracking beads\n", n) //nolint:errcheck // best-effort stderr
+	} else {
+		n, sweepErr := sweepOrphanedOrderTrackingRetry(sweepStore, 3, time.Second)
+		if closeErr := closeStoreIfSupported(sweepStore); closeErr != nil {
+			fmt.Fprintf(p.Stderr, "gc start: order tracking sweep store close: %v\n", closeErr) //nolint:errcheck // best-effort stderr
+		}
+		if sweepErr != nil {
+			fmt.Fprintf(p.Stderr, "gc start: order tracking sweep (closed %d): %v\n", n, sweepErr) //nolint:errcheck // best-effort stderr
+		} else if n > 0 {
+			fmt.Fprintf(p.Stderr, "gc start: closed %d orphaned order-tracking beads\n", n) //nolint:errcheck // best-effort stderr
+		}
 	}
 
-	od, orderSnapshot := buildOrderDispatcherWithSnapshot(p.CityPath, p.Cfg, p.Rec, p.Stderr, "gc start: order scan")
+	var cr *CityRuntime
+	od, orderSnapshot := buildOrderDispatcherWithSnapshotStoreFn(p.CityPath, p.Cfg, p.Rec, p.Stderr, "gc start: order scan", func(target execStoreTarget) (beads.Store, error) {
+		if cr == nil {
+			return openStoreAtForCity(target.ScopeRoot, p.CityPath)
+		}
+		return cr.openOrderDispatcherStore(p.CityPath, p.Cfg, target)
+	})
 
 	suspendedNames := computeSuspendedNames(p.Cfg, p.CityName, p.CityPath)
 
-	cr := &CityRuntime{
+	cr = &CityRuntime{
 		cityPath:                p.CityPath,
 		cityName:                p.CityName,
 		configName:              configName,
@@ -1227,13 +1239,46 @@ func (cr *CityRuntime) rescanOrderDispatcher(ctx context.Context, cityRoot strin
 		cr.drainOutgoingOrderDispatcher(drainCtx, cr.od)
 		drainCancel()
 	}
-	cr.od = buildOrderDispatcherFromOrderSet(cityRoot, cfg, snapshot.Orders, cr.rec, cr.stderr)
+	cr.od = buildOrderDispatcherFromOrderSetWithStoreFn(cityRoot, cfg, snapshot.Orders, cr.rec, cr.stderr, cr.orderDispatcherStoreFn(cityRoot, cfg))
 	cr.orderSet = snapshot.Orders
 	cr.orderSetSignature = snapshot.Signature
 	if summary != "unchanged" {
 		fmt.Fprintf(cr.stderr, "%s: orders reloaded: %s\n", cr.logPrefix, summary) //nolint:errcheck // best-effort stderr
 	}
 	return true, summary, nil
+}
+
+func (cr *CityRuntime) orderDispatcherStoreFn(cityPath string, cfg *config.City) func(execStoreTarget) (beads.Store, error) {
+	return func(target execStoreTarget) (beads.Store, error) {
+		return cr.openOrderDispatcherStore(cityPath, cfg, target)
+	}
+}
+
+func (cr *CityRuntime) openOrderDispatcherStore(cityPath string, cfg *config.City, target execStoreTarget) (beads.Store, error) {
+	bboltActive, err := cityUsesBboltBackend(cityPath, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("bead store: %w", err)
+	}
+	if bboltActive && orderTargetUsesCityStore(cityPath, target) {
+		if store := cr.cityBeadStore(); store != nil {
+			return store, nil
+		}
+	}
+	return openStoreAtForCity(target.ScopeRoot, cityPath)
+}
+
+func orderTargetUsesCityStore(cityPath string, target execStoreTarget) bool {
+	return target.ScopeKind == "city" || samePath(resolveStoreScopeRoot(cityPath, target.ScopeRoot), cityPath)
+}
+
+func closeStoreIfSupported(store beads.Store) error {
+	closer, ok := store.(interface {
+		Shutdown() error
+	})
+	if !ok {
+		return nil
+	}
+	return closer.Shutdown()
 }
 
 func orderSetChangeSummary(oldOrders, newOrders []orders.Order) string {
@@ -1684,7 +1729,7 @@ func (cr *CityRuntime) reloadConfigTraced(
 		cr.drainOutgoingOrderDispatcher(drainCtx, cr.od)
 		drainCancel()
 	}
-	nextOD, orderSnapshot := buildOrderDispatcherWithSnapshot(cityRoot, nextCfg, cr.rec, cr.stderr, "gc reload: order scan")
+	nextOD, orderSnapshot := buildOrderDispatcherWithSnapshotStoreFn(cityRoot, nextCfg, cr.rec, cr.stderr, "gc reload: order scan", cr.orderDispatcherStoreFn(cityRoot, nextCfg))
 	orderSummary := orderSetChangeSummary(cr.orderSet, orderSnapshot.Orders)
 	cr.od = nextOD
 	cr.orderSet = orderSnapshot.Orders
@@ -2858,6 +2903,7 @@ func (cr *CityRuntime) recordPreservedShutdownTrace() {
 // normal shutdown) — only the first call takes effect.
 func (cr *CityRuntime) shutdown() {
 	cr.shutdownOnce.Do(func() {
+		defer cr.closeBeadStores()
 		asyncStartsDrained := cr.waitForAsyncStarts()
 		cr.waitForAsyncStops()
 		preserveSessions := cr.preserveSessionsShutdown.Load()
@@ -2925,6 +2971,28 @@ func (cr *CityRuntime) shutdown() {
 			}
 		}
 	})
+}
+
+func (cr *CityRuntime) closeBeadStores() {
+	if cr.cs != nil {
+		if err := closeStoreIfSupported(cr.cityBeadStore()); err != nil && cr.stderr != nil {
+			fmt.Fprintf(cr.stderr, "%s: city bead store shutdown: %v\n", cr.logPrefix, err) //nolint:errcheck // best-effort stderr
+		}
+		for name, store := range cr.rigBeadStores() {
+			if err := closeStoreIfSupported(store); err != nil && cr.stderr != nil {
+				fmt.Fprintf(cr.stderr, "%s: rig %s bead store shutdown: %v\n", cr.logPrefix, name, err) //nolint:errcheck // best-effort stderr
+			}
+		}
+		return
+	}
+	if err := closeStoreIfSupported(cr.standaloneCityStore); err != nil && cr.stderr != nil {
+		fmt.Fprintf(cr.stderr, "%s: standalone city bead store shutdown: %v\n", cr.logPrefix, err) //nolint:errcheck // best-effort stderr
+	}
+	for name, store := range cr.standaloneRigStores {
+		if err := closeStoreIfSupported(store); err != nil && cr.stderr != nil {
+			fmt.Fprintf(cr.stderr, "%s: standalone rig %s bead store shutdown: %v\n", cr.logPrefix, name, err) //nolint:errcheck // best-effort stderr
+		}
+	}
 }
 
 func (cr *CityRuntime) preserveSessionsOnShutdown() {

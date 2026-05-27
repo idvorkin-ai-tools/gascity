@@ -78,9 +78,16 @@ type e2eProvider struct {
 	Env     map[string]string
 }
 
+// e2eBeads describes [beads] settings for E2E test cities.
+type e2eBeads struct {
+	Provider string
+	Backend  string
+}
+
 // e2eCity is the top-level config for E2E test cities.
 type e2eCity struct {
 	Workspace e2eWorkspace
+	Beads     e2eBeads
 	Agents    []e2eAgent
 	Providers map[string]e2eProvider
 }
@@ -153,7 +160,7 @@ func normalizeE2EPath(t *testing.T, path string) string {
 func renderE2EToml(city e2eCity) string {
 	var b strings.Builder
 	writeE2EWorkspaceSection(&b, city.Workspace)
-	b.WriteString("\n[beads]\nprovider = \"file\"\n")
+	writeE2EBeadsSection(&b, city.Beads)
 	writeE2EProviderSections(&b, city.Providers)
 	writeE2EAgentSections(&b, city.Agents)
 	writeE2ENamedSessionSections(&b, city.Agents)
@@ -163,7 +170,7 @@ func renderE2EToml(city e2eCity) string {
 func renderE2ECityRuntimeToml(city e2eCity) string {
 	var b strings.Builder
 	writeE2EWorkspaceSection(&b, city.Workspace)
-	b.WriteString("\n[beads]\nprovider = \"file\"\n")
+	writeE2EBeadsSection(&b, city.Beads)
 	return b.String()
 }
 
@@ -189,6 +196,17 @@ func writeE2EWorkspaceSection(b *strings.Builder, workspace e2eWorkspace) {
 	}
 	if workspace.Suspended {
 		b.WriteString("suspended = true\n")
+	}
+}
+
+func writeE2EBeadsSection(b *strings.Builder, beads e2eBeads) {
+	provider := beads.Provider
+	if provider == "" {
+		provider = "file"
+	}
+	fmt.Fprintf(b, "\n[beads]\nprovider = %s\n", quote(provider))
+	if beads.Backend != "" {
+		fmt.Fprintf(b, "backend = %s\n", quote(beads.Backend))
 	}
 }
 

@@ -276,12 +276,23 @@ func buildOrderDispatcher(cityPath string, cfg *config.City, rec events.Recorder
 }
 
 func buildOrderDispatcherWithSnapshot(cityPath string, cfg *config.City, rec events.Recorder, stderr io.Writer, cmdName string) (orderDispatcher, orderSetSnapshot) {
+	return buildOrderDispatcherWithSnapshotStoreFn(cityPath, cfg, rec, stderr, cmdName, nil)
+}
+
+func buildOrderDispatcherWithSnapshotStoreFn(
+	cityPath string,
+	cfg *config.City,
+	rec events.Recorder,
+	stderr io.Writer,
+	cmdName string,
+	storeFn func(execStoreTarget) (beads.Store, error),
+) (orderDispatcher, orderSetSnapshot) {
 	snapshot, err := scanOrderSetSnapshotFS(fsys.OSFS{}, cityPath, cfg, stderr, cmdName)
 	if err != nil {
 		logDispatchError(stderr, "%s: %v", cmdName, err)
 		return nil, orderSetSnapshot{}
 	}
-	return buildOrderDispatcherFromOrderSet(cityPath, cfg, snapshot.Orders, rec, stderr), snapshot
+	return buildOrderDispatcherFromOrderSetWithStoreFn(cityPath, cfg, snapshot.Orders, rec, stderr, storeFn), snapshot
 }
 
 func scanOrderSetSnapshotFS(fs fsys.FS, cityPath string, cfg *config.City, stderr io.Writer, cmdName string) (orderSetSnapshot, error) {
@@ -326,8 +337,26 @@ func orderSetSignature(aa []orders.Order) string {
 }
 
 func buildOrderDispatcherFromOrderSet(cityPath string, cfg *config.City, allAA []orders.Order, rec events.Recorder, stderr io.Writer) orderDispatcher {
+	return buildOrderDispatcherFromOrderSetWithStoreFn(cityPath, cfg, allAA, rec, stderr, func(target execStoreTarget) (beads.Store, error) {
+		return openStoreAtForCity(target.ScopeRoot, cityPath)
+	})
+}
+
+func buildOrderDispatcherFromOrderSetWithStoreFn(
+	cityPath string,
+	cfg *config.City,
+	allAA []orders.Order,
+	rec events.Recorder,
+	stderr io.Writer,
+	storeFn func(execStoreTarget) (beads.Store, error),
+) orderDispatcher {
 	if cfg == nil {
 		cfg = &config.City{}
+	}
+	if storeFn == nil {
+		storeFn = func(target execStoreTarget) (beads.Store, error) {
+			return openStoreAtForCity(target.ScopeRoot, cityPath)
+		}
 	}
 	allAA = orders.FilterEnabled(allAA)
 
@@ -351,10 +380,8 @@ func buildOrderDispatcherFromOrderSet(cityPath string, cfg *config.City, allAA [
 
 	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
 	return &memoryOrderDispatcher{
-		aa: auto,
-		storeFn: func(target execStoreTarget) (beads.Store, error) {
-			return openStoreAtForCity(target.ScopeRoot, cityPath)
-		},
+		aa:             auto,
+		storeFn:        storeFn,
 		ep:             ep,
 		execRun:        shellExecRunner,
 		rec:            rec,
