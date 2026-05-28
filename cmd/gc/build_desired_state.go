@@ -1032,12 +1032,7 @@ func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int,
 			if strings.TrimSpace(b.Assignee) != "" {
 				continue
 			}
-			// gc.run_target (per-step) takes precedence over gc.routed_to
-			// (convoy-wide default). See dispatch/fanout.go and adaf6ec.
-			template := strings.TrimSpace(b.Metadata["gc.run_target"])
-			if template == "" {
-				template = strings.TrimSpace(b.Metadata["gc.routed_to"])
-			}
+			template := scaleCheckRouteTarget(b)
 			if _, ok := group.templates[template]; !ok {
 				continue
 			}
@@ -1085,7 +1080,7 @@ func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int,
 			if strings.TrimSpace(b.Assignee) != "" {
 				continue
 			}
-			template := strings.TrimSpace(b.Metadata["gc.routed_to"])
+			template := scaleCheckRouteTarget(b)
 			if _, ok := group.templates[template]; !ok {
 				continue
 			}
@@ -1181,15 +1176,7 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, cfg *config.Ci
 			if strings.TrimSpace(b.Assignee) != "" {
 				continue
 			}
-			// gc.run_target (per-step) takes precedence over gc.routed_to
-			// (convoy-wide default). Without this, every child of a
-			// tellus-dev convoy looks routed to the convoy entry agent
-			// and named-singleton demand (architect/product-owner/...)
-			// is never computed. See dispatch/fanout.go and adaf6ec.
-			routedTo := strings.TrimSpace(b.Metadata["gc.run_target"])
-			if routedTo == "" {
-				routedTo = strings.TrimSpace(b.Metadata["gc.routed_to"])
-			}
+			routedTo := scaleCheckRouteTarget(b)
 			if routedTo == "" {
 				continue
 			}
@@ -1210,6 +1197,16 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, cfg *config.Ci
 		}
 	}
 	return demand, partialTemplates, errs
+}
+
+func scaleCheckRouteTarget(b beads.Bead) string {
+	// gc.run_target is the per-step execution target. It takes precedence
+	// over gc.routed_to, which can be a convoy-wide/default route stamped on
+	// every child. Keep scale-check readers aligned with dispatch/fanout.go.
+	if target := strings.TrimSpace(b.Metadata["gc.run_target"]); target != "" {
+		return target
+	}
+	return strings.TrimSpace(b.Metadata["gc.routed_to"])
 }
 
 func markScaleCheckPartialTemplate(partials map[string]bool, template string) map[string]bool {

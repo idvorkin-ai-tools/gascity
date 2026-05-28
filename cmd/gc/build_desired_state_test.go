@@ -422,6 +422,40 @@ func TestDefaultScaleCheckCountsCountsUnassignedRoutedPoolWork(t *testing.T) {
 	}
 }
 
+func TestDefaultScaleCheckCountsReadyPrefersRunTarget(t *testing.T) {
+	const template = "gascity/reviewer"
+	backing := beads.NewMemStore()
+	if _, err := backing.Create(beads.Bead{
+		Title:  "workflow child",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to":  "gascity/entry",
+			"gc.run_target": template,
+		},
+	}); err != nil {
+		t.Fatalf("create routed bead: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	counts, _, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{
+		{template: template, storeKey: "rig:gascity", store: cache},
+		{template: "gascity/entry", storeKey: "rig:gascity", store: cache},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v", errs)
+	}
+	if got := counts[template]; got != 1 {
+		t.Fatalf("defaultScaleCheckCounts[%q] = %d, want 1 from gc.run_target", template, got)
+	}
+	if got := counts["gascity/entry"]; got != 0 {
+		t.Fatalf("defaultScaleCheckCounts[gascity/entry] = %d, want 0 because gc.run_target wins", got)
+	}
+}
+
 func TestDefaultScaleCheckCountsDoesNotTreatTemplateAssigneeAsDemand(t *testing.T) {
 	const template = "gascity/reviewer"
 	backing := beads.NewMemStore()
@@ -568,6 +602,42 @@ func TestDefaultScaleCheckCountsCountsCronPoolDemandViaMetadataFlag(t *testing.T
 	}
 	if backing.livePoolDemand == 0 {
 		t.Fatalf("livePoolDemand list calls = 0, want >0 (defaultScaleCheckCounts must use Live: true to bypass the CachingStore snapshot, since cron pool orders fire from sibling subprocesses and the cache lags)")
+	}
+}
+
+func TestDefaultScaleCheckCountsCronPoolDemandPrefersRunTarget(t *testing.T) {
+	const template = "dog"
+	backing := &demandListCountingStore{Store: beads.NewMemStore()}
+	metadata := poolWispMetadata("entry-agent")
+	metadata["gc.run_target"] = template
+	if _, err := backing.Create(beads.Bead{
+		Title:    "mol-dog-stale-db",
+		Type:     "molecule",
+		Status:   "open",
+		Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("create pool-order wisp: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	counts, _, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{
+		{template: template, storeKey: "city", store: cache},
+		{template: "entry-agent", storeKey: "city", store: cache},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v", errs)
+	}
+	if got := counts[template]; got != 1 {
+		t.Fatalf("defaultScaleCheckCounts[%q] = %d, want 1 from gc.run_target pool demand", template, got)
+	}
+	if got := counts["entry-agent"]; got != 0 {
+		t.Fatalf("defaultScaleCheckCounts[entry-agent] = %d, want 0 because gc.run_target wins", got)
+	}
+	if backing.livePoolDemand == 0 {
+		t.Fatalf("livePoolDemand list calls = 0, want >0 for Source 2")
 	}
 }
 
@@ -958,6 +1028,45 @@ func TestDefaultNamedSessionDemandUsesPartialReadyRows(t *testing.T) {
 	}
 	if !partialTemplates["worker"] {
 		t.Fatalf("partialTemplates = %v, want worker marked partial", partialTemplates)
+	}
+}
+
+func TestDefaultNamedSessionDemandPrefersRunTarget(t *testing.T) {
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "workflow child",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to":  "entry-agent",
+			"gc.run_target": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create routed bead: %v", err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name: "worker",
+		}, {
+			Name: "entry-agent",
+		}},
+		NamedSessions: []config.NamedSession{{
+			Name:     "primary",
+			Template: "worker",
+			Mode:     "on_demand",
+		}},
+	}
+
+	demand, _, errs := defaultNamedSessionDemand([]defaultScaleCheckTarget{
+		{template: "worker", storeKey: "city", store: store},
+		{template: "entry-agent", storeKey: "city", store: store},
+	}, cfg, "test-city")
+	if len(errs) != 0 {
+		t.Fatalf("defaultNamedSessionDemand errs = %v", errs)
+	}
+	if !demand["primary"] {
+		t.Fatalf("defaultNamedSessionDemand[primary] = false, want gc.run_target to materialize named session")
 	}
 }
 
