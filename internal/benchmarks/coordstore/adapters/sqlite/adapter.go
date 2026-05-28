@@ -18,6 +18,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -41,23 +43,54 @@ type Adapter struct {
 	stmtGetMain *sql.Stmt
 	stmtGetEph  *sql.Stmt
 	seq         atomic.Int64
+	driverName  string
+	pragmaSQL   string
+	idPrefix    string
+
+	// dbPath records the on-disk store.db location so Stats can report the
+	// WAL / SHM / DB file sizes — these dominate the cgroup memory footprint
+	// in WAL mode and are not visible from database/sql.Stats().
+	dbPath string
+
+	// checkpointCancel stops the background wal_checkpoint(TRUNCATE) loop on
+	// Close. checkpointDone closes when the loop has fully exited so Close
+	// can wait without leaking the goroutine. When the background loop is
+	// disabled (interval <= 0), both fields stay nil.
+	checkpointCancel context.CancelFunc
+	checkpointDone   chan struct{}
 }
 
 // New returns an Adapter. Call Open before using it.
-func New() *Adapter { return &Adapter{} }
+func New() *Adapter { return NewWithDriver(DefaultDriverName, DefaultPragmas, "sq") }
+
+// NewWithDriver returns an Adapter using the supplied database/sql driver,
+// PRAGMA block, and generated ID prefix.
+func NewWithDriver(driverName, pragmaSQL, idPrefix string) *Adapter {
+	if driverName == "" {
+		driverName = DefaultDriverName
+	}
+	if pragmaSQL == "" {
+		pragmaSQL = DefaultPragmas
+	}
+	if idPrefix == "" {
+		idPrefix = "sq"
+	}
+	return &Adapter{driverName: driverName, pragmaSQL: pragmaSQL, idPrefix: idPrefix}
+}
 
 // Open initializes the SQLite database at cfg.DataDir/store.db.
 func (a *Adapter) Open(ctx context.Context, cfg coordstore.Config) error {
 	path := cfg.DataDir + "/store.db"
+	driverName, pragmaSQL := a.openSettings()
 
 	// Write connection: single connection, serializes all mutations.
-	writeDB, err := sql.Open("sqlite", path+"?_busy_timeout=5000")
+	writeDB, err := sql.Open(driverName, path+"?_busy_timeout=5000")
 	if err != nil {
 		return fmt.Errorf("sqlite: open write db %s: %w", path, err)
 	}
 	writeDB.SetMaxOpenConns(1)
 
-	if _, err := writeDB.ExecContext(ctx, pragmas); err != nil {
+	if _, err := writeDB.ExecContext(ctx, pragmaSQL); err != nil {
 		writeDB.Close() //nolint:errcheck
 		return fmt.Errorf("sqlite: set pragmas: %w", err)
 	}
@@ -65,11 +98,15 @@ func (a *Adapter) Open(ctx context.Context, cfg coordstore.Config) error {
 		writeDB.Close() //nolint:errcheck
 		return fmt.Errorf("sqlite: apply schema: %w", err)
 	}
+	if err := a.recoverSequence(ctx, writeDB); err != nil {
+		writeDB.Close() //nolint:errcheck
+		return err
+	}
 
 	// Read connection pool: WAL allows concurrent reads even during writes.
 	// Opened without mode=ro so WAL wal-index is fully shared; the Go code
 	// never issues writes through readDB — that's enforced structurally.
-	readDB, err := sql.Open("sqlite", path+"?_busy_timeout=5000")
+	readDB, err := sql.Open(driverName, path+"?_busy_timeout=5000")
 	if err != nil {
 		writeDB.Close() //nolint:errcheck
 		return fmt.Errorf("sqlite: open read db %s: %w", path, err)
@@ -103,11 +140,72 @@ func (a *Adapter) Open(ctx context.Context, cfg coordstore.Config) error {
 	a.readDB = readDB
 	a.stmtGetMain = stmtGetMain
 	a.stmtGetEph = stmtGetEph
+	a.dbPath = path
+	a.startCheckpointer(checkpointIntervalFromEnv())
 	return nil
+}
+
+// checkpointIntervalFromEnv resolves the cadence for the background
+// wal_checkpoint(TRUNCATE) loop. Empty env → defaultCheckpointInterval;
+// "0" or "off" → loop disabled; anything else → time.ParseDuration.
+func checkpointIntervalFromEnv() time.Duration {
+	v := strings.TrimSpace(os.Getenv("COORDSTORE_SQLITE_CHECKPOINT_INTERVAL"))
+	if v == "" {
+		return defaultCheckpointInterval
+	}
+	if v == "0" || strings.EqualFold(v, "off") {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return defaultCheckpointInterval
+	}
+	return d
+}
+
+// startCheckpointer launches a goroutine that calls PRAGMA wal_checkpoint
+// (TRUNCATE) on the write connection at the given interval. The TRUNCATE
+// mode is the only one that actually shrinks the on-disk WAL file —
+// PASSIVE / FULL leave it at its high-water mark, which is the failure
+// mode the ga-2s6sz spike exists to fix. A non-positive interval is a
+// no-op: useful for unit tests that want the legacy "no background work"
+// behavior, and for ablation experiments that need to isolate the effect.
+func (a *Adapter) startCheckpointer(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.checkpointCancel = cancel
+	a.checkpointDone = make(chan struct{})
+	go func() {
+		defer close(a.checkpointDone)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				// Best-effort: checkpoint contention with active readers can
+				// cause SQLITE_BUSY here, but the next tick retries. The
+				// pragma writes a 3-column result set (busy, log, checkpointed)
+				// that we intentionally discard — the win is bounded WAL,
+				// not telemetry from this call. The actual WAL size is
+				// captured via Stats() each sample.
+				_, _ = a.writeDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE);")
+			}
+		}
+	}()
 }
 
 // Close releases all database connections and prepared statements.
 func (a *Adapter) Close() error {
+	if a.checkpointCancel != nil {
+		a.checkpointCancel()
+		<-a.checkpointDone
+		a.checkpointCancel = nil
+		a.checkpointDone = nil
+	}
 	var errs []string
 	if a.stmtGetMain != nil {
 		if err := a.stmtGetMain.Close(); err != nil {
@@ -152,7 +250,42 @@ func (a *Adapter) Reset(ctx context.Context) error {
 
 // nextID generates a unique record ID.
 func (a *Adapter) nextID() string {
-	return fmt.Sprintf("sq-%d", a.seq.Add(1))
+	prefix := a.idPrefix
+	if prefix == "" {
+		prefix = "sq"
+	}
+	return fmt.Sprintf("%s-%d", prefix, a.seq.Add(1))
+}
+
+func (a *Adapter) recoverSequence(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `
+SELECT id FROM records WHERE id LIKE ?
+UNION ALL
+SELECT id FROM ephemeral WHERE id LIKE ?`, "sq-%", "sq-%")
+	if err != nil {
+		return fmt.Errorf("sqlite: recover id sequence: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var maxSeq int64
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("sqlite: recover id sequence scan: %w", err)
+		}
+		raw := strings.TrimPrefix(id, "sq-")
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			continue
+		}
+		if value > maxSeq {
+			maxSeq = value
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: recover id sequence rows: %w", err)
+	}
+	a.seq.Store(maxSeq)
+	return nil
 }
 
 // --- FR-1: CRUD ---
@@ -617,14 +750,31 @@ func (a *Adapter) RecentScan(ctx context.Context, limit int) ([]coordstore.Recor
 	return scanMainRows(rows)
 }
 
-// Stats returns SQLite-level diagnostics.
+// Stats returns SQLite-level diagnostics. In addition to the database/sql
+// pool stats it includes the on-disk sizes of the database, WAL, and
+// shared-memory index files — these dominate the cgroup memory accounting
+// in WAL mode and are the metric the ga-2s6sz spike is gated on. Missing
+// or unreadable files are reported as zero; the function never returns an
+// error so it remains safe to call from the telemetry hot path.
 func (a *Adapter) Stats(_ context.Context) map[string]int64 {
 	stats := a.readDB.Stats()
-	return map[string]int64{
+	out := map[string]int64{
 		"open_connections": int64(stats.OpenConnections),
 		"in_use":           int64(stats.InUse),
 		"idle":             int64(stats.Idle),
 	}
+	if a.dbPath != "" {
+		if fi, err := os.Stat(a.dbPath); err == nil {
+			out["db_size_bytes"] = fi.Size()
+		}
+		if fi, err := os.Stat(a.dbPath + "-wal"); err == nil {
+			out["wal_size_bytes"] = fi.Size()
+		}
+		if fi, err := os.Stat(a.dbPath + "-shm"); err == nil {
+			out["shm_size_bytes"] = fi.Size()
+		}
+	}
+	return out
 }
 
 // --- helpers ---
@@ -817,15 +967,55 @@ func isNotFound(err error) bool {
 	return ok
 }
 
-// pragmas are applied once after opening the database.
-const pragmas = `
+func (a *Adapter) openSettings() (string, string) {
+	driverName := a.driverName
+	if driverName == "" {
+		driverName = DefaultDriverName
+	}
+	pragmaSQL := a.pragmaSQL
+	if pragmaSQL == "" {
+		pragmaSQL = DefaultPragmas
+	}
+	return driverName, pragmaSQL
+}
+
+// DefaultDriverName is the modernc.org/sqlite database/sql driver name.
+const DefaultDriverName = "sqlite"
+
+// DefaultPragmas are applied once after opening the pure-Go SQLite database.
+// wal_autocheckpoint=1000 re-enables SQLite's canonical 1000-page (~4MB)
+// writer-side checkpoint; mmap_size=0 removes the 256MB cgroup mmap charge.
+// Both were explicitly disabled before this fix and caused the ga-4advr OOM
+// at 32m22s under MemoryMax=8G. See ga-qe54tg for the full rationale.
+const DefaultPragmas = `
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 PRAGMA cache_size=-65536;
 PRAGMA temp_store=MEMORY;
-PRAGMA mmap_size=268435456;
-PRAGMA wal_autocheckpoint=0;
+PRAGMA mmap_size=0;
+PRAGMA wal_autocheckpoint=1000;
 `
+
+// FullSyncPragmas are applied by the sqlite-cgo adapter for fsync-on-commit
+// durability under sustained load. mmap_size=0 keeps the database file out
+// of the cgroup mmap accounting; wal_autocheckpoint=1000 hands SQLite the
+// canonical 1000-page (~4MB) auto-checkpoint trigger from the writer side,
+// which combined with the background TRUNCATE loop bounds the WAL file
+// (refs ga-2s6sz).
+const FullSyncPragmas = `
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=FULL;
+PRAGMA cache_size=-65536;
+PRAGMA temp_store=MEMORY;
+PRAGMA mmap_size=0;
+PRAGMA wal_autocheckpoint=1000;
+`
+
+// defaultCheckpointInterval is the cadence at which the background
+// wal_checkpoint(TRUNCATE) loop runs when enabled. It can be overridden per
+// process via COORDSTORE_SQLITE_CHECKPOINT_INTERVAL (any value accepted by
+// time.ParseDuration; "0" or "off" disables the loop).
+const defaultCheckpointInterval = 30 * time.Second
 
 // schema defines all tables and indexes. Applied once at Open.
 const schema = `
