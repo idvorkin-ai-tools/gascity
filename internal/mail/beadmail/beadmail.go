@@ -790,13 +790,15 @@ func (p *Provider) messageCandidatesForRoutes(routes []string) ([]beads.Bead, er
 	return p.messageCandidatesAll(routes)
 }
 
-// messageCandidatesAll returns all open issue-tier message beads matching any
-// route in a single store scan. Empty routes return all open messages.
+// messageCandidatesAll returns all open message beads matching any route.
+// TierBoth is one logical query; BdStore may satisfy it with separate
+// issue-tier and wisp-tier reads before deduping. Empty routes return all open
+// messages.
 func (p *Provider) messageCandidatesAll(routes []string) ([]beads.Bead, error) {
 	all, err := p.store.List(beads.ListQuery{
 		Type:      "message",
 		Status:    "open",
-		TierMode:  beads.TierIssues,
+		TierMode:  beads.TierBoth,
 		AllowScan: true,
 	})
 	if err != nil {
