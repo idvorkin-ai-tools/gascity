@@ -2684,15 +2684,22 @@ func TestControllerStateBeadEventWatcherConsumesExternalFileEvent(t *testing.T) 
 		t.Fatal("external file bead event did not poke controller")
 	}
 
+	// The watcher applies the externally-created bead to the cache, but its
+	// dependency coverage is unknown until a full reprime, so the cache-only
+	// controller-demand read marks the template partial instead of falling
+	// back to a live read. This mirrors
+	// TestDefaultScaleCheckCountsMarksPartialWhenCachedEventDepsUnknown; the
+	// sibling TestControllerStateBeadEventWatcherReplaysEventsAfterCachePrime
+	// primes first and so still counts the bead.
 	counts, _, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
 		template: "claude",
 		store:    cs.cityBeadStore,
 	}})
-	if len(errs) != 0 {
-		t.Fatalf("defaultScaleCheckCounts errs = %v", errs)
+	if len(errs) != 1 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v, want cache-unavailable partial", errs)
 	}
-	if got := counts["claude"]; got != 1 {
-		t.Fatalf("defaultScaleCheckCounts[claude] = %d, want 1", got)
+	if got := counts["claude"]; got != 0 {
+		t.Fatalf("defaultScaleCheckCounts[claude] = %d, want 0 (cache-only demand read, no live fallback)", got)
 	}
 }
 
