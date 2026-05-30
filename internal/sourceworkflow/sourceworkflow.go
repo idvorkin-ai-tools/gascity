@@ -362,7 +362,7 @@ func ListWorkflowBeads(store beads.Store, rootID string) ([]beads.Bead, error) {
 	if err != nil {
 		return nil, err
 	}
-	descendants, err := store.List(beads.ListQuery{
+	descendants, err := beads.HandlesFor(store).Live.List(beads.ListQuery{
 		IncludeClosed: true,
 		Metadata: map[string]string{
 			"gc.root_bead_id": rootID,
