@@ -38,6 +38,7 @@ var (
 	_ runtime.ImmediateNudgeProvider        = (*Provider)(nil)
 	_ runtime.InterruptBoundaryWaitProvider = (*Provider)(nil)
 	_ runtime.InterruptedTurnResetProvider  = (*Provider)(nil)
+	_ runtime.ServerLifecycleProvider       = (*Provider)(nil)
 )
 
 // NewProvider returns a [Provider] backed by a real tmux installation
@@ -649,6 +650,16 @@ func (p *Provider) Attach(name string) error {
 // that are not part of the [runtime.Provider] interface.
 func (p *Provider) Tmux() *Tmux {
 	return p.tm
+}
+
+// ConfigureServer applies tmux server-level configuration.
+func (p *Provider) ConfigureServer() error {
+	return p.tm.ConfigureServer()
+}
+
+// TeardownServer terminates the tmux server after all sessions are drained.
+func (p *Provider) TeardownServer() error {
+	return p.tm.TeardownServer()
 }
 
 // ---------------------------------------------------------------------------
