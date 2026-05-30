@@ -2802,24 +2802,29 @@ var poolDemandKeys = []string{"gc.run_target", "gc.routed_to"}
 // poolDemandFirstRowProbes (work_query) and poolDemandCountShell (count-form),
 // which call this helper once per key in poolDemandKeys order.
 //
-// Callers append their own bd flags (--limit=1 for first-row work_query;
+// Callers append their own bd flags (--limit=0 for first-row work_query;
 // --limit 0 piped to jq 'length' for the count-form) and shell handling.
 func bdReadyPoolDemandShell(key, target string) string {
-	return `bd ready --metadata-field ` + key + `=` + target + ` --unassigned --exclude-type=epic --json`
+	return `bd ready --include-ephemeral --metadata-field ` + key + `=` + target + ` --unassigned --exclude-type=epic --sort oldest --json`
 }
 
 // poolDemandFirstRowProbes emits the work_query Tier 3 body for target: it
-// tries each routing key in poolDemandKeys precedence order at --limit=1,
+// tries each routing key in poolDemandKeys precedence order at --limit=0,
 // printing the first non-empty JSON array and exiting 0. Used for both the
 // primary and legacy workflow-control targets. The caller appends a terminal
 // fallthrough (e.g. printf "[]") for the all-empty case.
 func poolDemandFirstRowProbes(target string) string {
 	var b strings.Builder
 	for _, key := range poolDemandKeys {
-		b.WriteString(`r=$(` + bdReadyPoolDemandShell(key, target) + ` --limit=1 2>/dev/null); `)
+		b.WriteString(`r=$(` + routedReadyTierCommand(key, target) + `); `)
 		b.WriteString(`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; `)
 	}
 	return b.String()
+}
+
+func routedReadyTierCommand(key, target string) string {
+	return bdReadyPoolDemandShell(key, target) +
+		` --limit=0 2>/dev/null | jq -c "sort_by((.priority // 3), .created_at, .id) | .[:1]"`
 }
 
 // poolDemandCountShell emits the reconciler count-form for target: it counts
