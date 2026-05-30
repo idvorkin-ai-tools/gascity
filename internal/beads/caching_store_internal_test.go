@@ -291,6 +291,207 @@ func TestCachingStoreHandlesCachedReadsWaitForFullPrimeAfterPrimeActive(t *testi
 	}
 }
 
+func TestCachingStoreHandlesCachedReadDoesNotWaitForRunningFullPrimeAfterPrimeActive(t *testing.T) {
+	t.Parallel()
+
+	mem := NewMemStore()
+	if _, err := mem.Create(Bead{Title: "cached work"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	backing := &blockingPrimeListStore{
+		Store:   mem,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	cache := NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	primeDone := make(chan error, 1)
+	go func() {
+		primeDone <- cache.Prime(context.Background())
+	}()
+	select {
+	case <-backing.started:
+	case <-time.After(time.Second):
+		t.Fatal("full prime did not start")
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := cache.Handles().Cached.List(ListQuery{Status: "open"})
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, ErrCacheUnavailable) {
+			t.Fatalf("Cached.List error = %v, want ErrCacheUnavailable", err)
+		}
+	case <-time.After(25 * time.Millisecond):
+		t.Fatal("Cached.List waited for the running full prime")
+	}
+	if got := backing.primeListCalls.Load(); got != 1 {
+		t.Fatalf("prime list calls = %d, want only the running full prime", got)
+	}
+
+	close(backing.release)
+	if err := <-primeDone; err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+}
+
+func TestCachingStoreHandlesCachedReadDoesNotPrimeWhenDegraded(t *testing.T) {
+	t.Parallel()
+
+	mem := NewMemStore()
+	if _, err := mem.Create(Bead{
+		Title:  "cached work",
+		Status: "open",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	backing := &hardFailFullPrimeStore{
+		Store: mem,
+		err:   errors.New("full scan unavailable"),
+	}
+	cache := NewCachingStoreForTest(backing, nil)
+	cache.mu.Lock()
+	cache.state = cacheDegraded
+	cache.mu.Unlock()
+
+	_, err := cache.Handles().Cached.List(ListQuery{Status: "open"})
+	if !errors.Is(err, ErrCacheUnavailable) {
+		t.Fatalf("Cached.List error = %v, want ErrCacheUnavailable", err)
+	}
+	if got := backing.primeListCalls.Load(); got != 0 {
+		t.Fatalf("full-prime list calls = %d, want no synchronous prime while degraded", got)
+	}
+}
+
+func TestCachingStoreHandlesCachedReadsSuppressRecentPartialPrimeRetry(t *testing.T) {
+	t.Parallel()
+
+	mem := NewMemStore()
+	bead, err := mem.Create(Bead{Title: "cached work"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	backing := &countingPartialFullPrimeStore{
+		partialListErrorStore: &partialListErrorStore{
+			Store:            mem,
+			partialAllowScan: true,
+			partialRows:      []Bead{bead},
+		},
+	}
+	cache := NewCachingStoreForTest(backing, nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if got := backing.primeListCalls.Load(); got != 1 {
+		t.Fatalf("prime list calls after partial Prime = %d, want 1", got)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := cache.Handles().Cached.List(ListQuery{Status: "open"}); !errors.Is(err, ErrCacheUnavailable) {
+			t.Fatalf("Cached.List attempt %d error = %v, want ErrCacheUnavailable", i+1, err)
+		}
+	}
+	if got := backing.primeListCalls.Load(); got != 1 {
+		t.Fatalf("prime list calls after suppressed cached reads = %d, want 1", got)
+	}
+
+	backing.partialAllowScan = false
+	cache.primeMu.Lock()
+	cache.lastFullPrimeStartedAt = time.Now().Add(-cacheLazyFullPrimeRetryInterval - time.Second)
+	cache.primeMu.Unlock()
+
+	rows, err := cache.Handles().Cached.List(ListQuery{Status: "open"})
+	if err != nil {
+		t.Fatalf("Cached.List after retry interval: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != bead.ID {
+		t.Fatalf("Cached.List rows after retry = %#v, want %s", rows, bead.ID)
+	}
+	if got := backing.primeListCalls.Load(); got != 2 {
+		t.Fatalf("prime list calls after retry interval = %d, want 2", got)
+	}
+}
+
+func TestCachingStoreHandlesCachedListHardPrimeFailureReturnsCacheUnavailable(t *testing.T) {
+	t.Parallel()
+
+	mem := NewMemStore()
+	work, err := mem.Create(Bead{
+		Title:    "active work",
+		Type:     "task",
+		Status:   "in_progress",
+		Assignee: "worker",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	status := "in_progress"
+	if err := mem.Update(work.ID, UpdateOpts{Status: &status}); err != nil {
+		t.Fatalf("Update status: %v", err)
+	}
+	backing := &hardFailFullPrimeStore{
+		Store: mem,
+		err:   errors.New("full scan unavailable"),
+	}
+	cache := NewCachingStoreForTest(backing, nil)
+	cache.primeRetryDelay = func(int) time.Duration { return 0 }
+
+	_, err = cache.Handles().Cached.List(ListQuery{Status: "in_progress"})
+	if !errors.Is(err, ErrCacheUnavailable) {
+		t.Fatalf("Cached.List error = %v, want ErrCacheUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "full scan unavailable") {
+		t.Fatalf("Cached.List error = %v, want hard prime cause preserved", err)
+	}
+	if got := backing.primeListCalls.Load(); got != 3 {
+		t.Fatalf("full-prime list calls = %d, want 3 retries", got)
+	}
+
+	rows, err := cache.Handles().Live.List(ListQuery{Status: "in_progress"})
+	if err != nil {
+		t.Fatalf("Live.List: %v", err)
+	}
+	assertHasBeadIDs(t, rows, work.ID)
+	if got := backing.liveInProgressLists.Load(); got != 1 {
+		t.Fatalf("live in-progress list calls = %d, want targeted live fallback path to succeed", got)
+	}
+}
+
+func TestCachingStorePrimeWaiterReturnsGenerationError(t *testing.T) {
+	t.Parallel()
+
+	cache := NewCachingStoreForTest(NewMemStore(), nil)
+	cycle, owner := cache.beginFullPrime()
+	if !owner {
+		t.Fatal("first beginFullPrime did not return owner")
+	}
+
+	waitErr := make(chan error, 1)
+	go func() {
+		waitErr <- cache.waitForFullPrimeDone(context.Background(), cycle)
+	}()
+
+	firstErr := errors.New("first generation failed")
+	cache.primeMu.Lock()
+	cycle.err = firstErr
+	cache.primeRunning = false
+	close(cycle.done)
+	cache.primeCycle = &fullPrimeCycle{done: make(chan struct{})}
+	cache.primeRunning = true
+	cache.lastFullPrimeStartedAt = time.Now()
+	cache.primeMu.Unlock()
+
+	if err := <-waitErr; !errors.Is(err, firstErr) {
+		t.Fatalf("waitForFullPrimeDone error = %v, want first generation error", err)
+	}
+}
+
 func TestCachingStoreHandlesReadLogicalStoreWithoutTierFlags(t *testing.T) {
 	t.Parallel()
 
@@ -393,6 +594,36 @@ func (s *blockingPrimeListStore) List(query ListQuery) ([]Bead, error) {
 		s.primeListCalls.Add(1)
 		s.startedOnce.Do(func() { close(s.started) })
 		<-s.release
+	}
+	return s.Store.List(query)
+}
+
+type countingPartialFullPrimeStore struct {
+	*partialListErrorStore
+	primeListCalls atomic.Int64
+}
+
+func (s *countingPartialFullPrimeStore) List(query ListQuery) ([]Bead, error) {
+	if query.AllowScan && query.SkipLabels && query.TierMode == TierBoth {
+		s.primeListCalls.Add(1)
+	}
+	return s.partialListErrorStore.List(query)
+}
+
+type hardFailFullPrimeStore struct {
+	Store
+	err                 error
+	primeListCalls      atomic.Int64
+	liveInProgressLists atomic.Int64
+}
+
+func (s *hardFailFullPrimeStore) List(query ListQuery) ([]Bead, error) {
+	if !query.Live && query.AllowScan && query.SkipLabels && query.TierMode == TierBoth {
+		s.primeListCalls.Add(1)
+		return nil, s.err
+	}
+	if query.Live && query.Status == "in_progress" {
+		s.liveInProgressLists.Add(1)
 	}
 	return s.Store.List(query)
 }
@@ -834,6 +1065,47 @@ func TestCachingStoreUpdateInvalidatesStaleCacheWhenRefreshFails(t *testing.T) {
 	}
 	if stats.LastProblemAt.IsZero() {
 		t.Fatal("LastProblemAt should be set")
+	}
+}
+
+func TestCachingStoreUpdateRemovesCacheWhenRefreshReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	backing := &deleteAfterUpdateStore{Store: NewMemStore()}
+	bead, err := backing.Create(Bead{Title: "before"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var events []string
+	cache := NewCachingStoreForTest(backing, func(eventType, beadID string, _ json.RawMessage) {
+		events = append(events, eventType+":"+beadID)
+	})
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	title := "after"
+	if err := cache.Update(bead.ID, UpdateOpts{Title: &title}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if got, err := cache.Get(bead.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get after update/refresh NotFound = (%#v, %v), want ErrNotFound", got, err)
+	}
+	items, err := cache.List(ListQuery{Status: "open", AllowScan: true})
+	if err != nil {
+		t.Fatalf("List after update/refresh NotFound: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("List after update/refresh NotFound = %#v, want no resurrected bead", items)
+	}
+	if len(events) != 1 || events[0] != "bead.closed:"+bead.ID {
+		t.Fatalf("events = %v, want [bead.closed:%s]", events, bead.ID)
+	}
+	stats := cache.Stats()
+	if stats.ProblemCount != 0 {
+		t.Fatalf("ProblemCount = %d, want benign refresh NotFound to stay out of problem log", stats.ProblemCount)
 	}
 }
 
@@ -2022,6 +2294,29 @@ func TestCachingStoreCachedListSupportsActiveTierQueries(t *testing.T) {
 	}
 }
 
+func TestCachingStoreCachedListRejectsIncludeClosedQueries(t *testing.T) {
+	t.Parallel()
+
+	backing := NewMemStore()
+	if _, err := backing.Create(Bead{Title: "order run", Labels: []string{"order-run:daily"}, Ephemeral: true}); err != nil {
+		t.Fatalf("Create order run: %v", err)
+	}
+	cache := NewCachingStoreForTest(backing, nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	rows, ok := cache.CachedList(ListQuery{
+		Label:         "order-run:daily",
+		IncludeClosed: true,
+		TierMode:      TierBoth,
+		Limit:         1,
+	})
+	if ok {
+		t.Fatalf("CachedList IncludeClosed ok=true rows=%#v, want ok=false", rows)
+	}
+}
+
 type refreshFailingStore struct {
 	Store
 	failNextGet bool
@@ -2033,6 +2328,17 @@ func (s *refreshFailingStore) Get(id string) (Bead, error) {
 		return Bead{}, errors.New("transient get failure")
 	}
 	return s.Store.Get(id)
+}
+
+type deleteAfterUpdateStore struct {
+	Store
+}
+
+func (s *deleteAfterUpdateStore) Update(id string, opts UpdateOpts) error {
+	if err := s.Store.Update(id, opts); err != nil {
+		return err
+	}
+	return s.Delete(id)
 }
 
 type listFailingStore struct {

@@ -1073,6 +1073,7 @@ func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int,
 			Status:   "open",
 			Metadata: poolDemandMetadataPair(),
 			Live:     true,
+			TierMode: beads.TierBoth,
 		})
 		if demandErr != nil {
 			errs = append(errs, fmt.Errorf("default scale_check %s templates=%s: List(%s): %w", key, strings.Join(sortedStringSet(group.templates), ","), poolDemandMetadataKey, demandErr))
@@ -1307,15 +1308,30 @@ func sortedStringSet(values map[string]struct{}) []string {
 }
 
 func listBothTiersForControllerDemand(store beads.Store, query beads.ListQuery) ([]beads.Bead, error) {
-	return beads.HandlesFor(store).Cached.List(query)
+	handles := beads.HandlesFor(store)
+	rows, err := handles.Cached.List(query)
+	if errors.Is(err, beads.ErrCacheUnavailable) {
+		return handles.Live.List(query)
+	}
+	return rows, err
 }
 
 func readyForControllerDemand(store beads.Store) ([]beads.Bead, error) {
-	return beads.HandlesFor(store).Cached.Ready()
+	handles := beads.HandlesFor(store)
+	rows, err := handles.Cached.Ready()
+	if errors.Is(err, beads.ErrCacheUnavailable) {
+		return handles.Live.Ready()
+	}
+	return rows, err
 }
 
 func readyForControllerDemandQuery(store beads.Store, query beads.ReadyQuery) ([]beads.Bead, error) {
-	return beads.HandlesFor(store).Cached.Ready(query)
+	handles := beads.HandlesFor(store)
+	rows, err := handles.Cached.Ready(query)
+	if errors.Is(err, beads.ErrCacheUnavailable) {
+		return handles.Live.Ready(query)
+	}
+	return rows, err
 }
 
 // mergeNamedSessionDemand ensures that named-session assignee demand is

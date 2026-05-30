@@ -169,9 +169,25 @@ func (s *demandRefreshFailStore) List(query beads.ListQuery) ([]beads.Bead, erro
 	return s.Store.List(query)
 }
 
+type cacheUnavailableListStore struct {
+	*beads.MemStore
+	liveInProgressIssueLists int
+}
+
+func (s *cacheUnavailableListStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	if query.Live {
+		if query.Status == "in_progress" {
+			s.liveInProgressIssueLists++
+		}
+		return s.MemStore.List(query)
+	}
+	return nil, fmt.Errorf("cached list unavailable: %w", beads.ErrCacheUnavailable)
+}
+
 type partialAssignedWorkStore struct {
 	*beads.MemStore
 	partialInProgress bool
+	partialPoolDemand bool
 	partialReady      bool
 }
 
@@ -205,6 +221,9 @@ func (s *partialAssignedWorkStore) List(query beads.ListQuery) ([]beads.Bead, er
 	}
 	if s.partialInProgress && query.Status == "in_progress" {
 		return rows, &beads.PartialResultError{Op: "bd list", Err: errors.New("skipped corrupt in-progress bead")}
+	}
+	if s.partialPoolDemand && query.Status == "open" && query.Metadata[poolDemandMetadataKey] == poolDemandMetadataValue {
+		return rows, &beads.PartialResultError{Op: "bd list", Err: errors.New("skipped corrupt pool-demand bead")}
 	}
 	return rows, nil
 }
@@ -374,6 +393,34 @@ func TestCollectAssignedWorkBeadsReprimesWhenCachedInProgressDirty(t *testing.T)
 	}
 	if backing.liveInProgressWispLists != 0 {
 		t.Fatalf("live wisp in_progress list calls = %d, want shared cache reprime", backing.liveInProgressWispLists)
+	}
+}
+
+func TestCollectAssignedWorkBeadsFallsBackToLiveWhenCachedInProgressUnavailable(t *testing.T) {
+	store := &cacheUnavailableListStore{MemStore: beads.NewMemStore()}
+	work, err := store.Create(beads.Bead{
+		Title:    "active handoff",
+		Type:     "task",
+		Status:   "in_progress",
+		Assignee: "repo/refinery",
+	})
+	if err != nil {
+		t.Fatalf("create active bead: %v", err)
+	}
+	status := "in_progress"
+	if err := store.Update(work.ID, beads.UpdateOpts{Status: &status}); err != nil {
+		t.Fatalf("mark active bead in_progress: %v", err)
+	}
+
+	got, partial := collectAssignedWorkBeads(&config.City{}, store)
+	if partial {
+		t.Fatal("collectAssignedWorkBeads reported partial with successful live fallback")
+	}
+	if len(got) != 1 || got[0].ID != work.ID || got[0].Status != "in_progress" || got[0].Assignee != "repo/refinery" {
+		t.Fatalf("collectAssignedWorkBeads returned %#v, want live fallback in-progress %s", got, work.ID)
+	}
+	if store.liveInProgressIssueLists == 0 {
+		t.Fatal("live issue in_progress list calls = 0, want live fallback after cache unavailable")
 	}
 }
 
@@ -591,10 +638,11 @@ func TestDefaultScaleCheckCountsIgnoresOpenMoleculeContainers(t *testing.T) {
 func TestDefaultScaleCheckCountsCountsCronPoolDemandViaMetadataFlag(t *testing.T) {
 	backing := &demandListCountingStore{Store: beads.NewMemStore()}
 	if _, err := backing.Create(beads.Bead{
-		Title:    "mol-dog-stale-db",
-		Type:     "molecule",
-		Status:   "open",
-		Metadata: poolWispMetadata("dog"),
+		Title:     "mol-dog-stale-db",
+		Type:      "molecule",
+		Status:    "open",
+		Metadata:  poolWispMetadata("dog"),
+		Ephemeral: true,
 	}); err != nil {
 		t.Fatalf("create pool-order wisp: %v", err)
 	}
@@ -676,11 +724,12 @@ func TestDefaultScaleCheckCountsIgnoresAssignedCronPoolDemand(t *testing.T) {
 	backing := &demandListCountingStore{Store: beads.NewMemStore()}
 	wisp := poolWispMetadata("dog")
 	if _, err := backing.Create(beads.Bead{
-		Title:    "mol-dog-stale-db",
-		Type:     "molecule",
-		Status:   "open",
-		Assignee: "dog-1",
-		Metadata: wisp,
+		Title:     "mol-dog-stale-db",
+		Type:      "molecule",
+		Status:    "open",
+		Assignee:  "dog-1",
+		Metadata:  wisp,
+		Ephemeral: true,
 	}); err != nil {
 		t.Fatalf("create assigned pool wisp: %v", err)
 	}
@@ -768,9 +817,10 @@ func TestDefaultScaleCheckCountsIgnoresNumericPoolDemand(t *testing.T) {
 	}
 	backing := &demandListCountingStore{Store: beads.NewMemStore()}
 	if _, err := backing.Create(beads.Bead{
-		Title:  "wisp with numeric pool_demand",
-		Type:   "molecule",
-		Status: "open",
+		Title:     "wisp with numeric pool_demand",
+		Type:      "molecule",
+		Status:    "open",
+		Ephemeral: true,
 		Metadata: map[string]string{
 			"gc.routed_to":        "dog",
 			poolDemandMetadataKey: "1",
@@ -876,7 +926,7 @@ func TestDefaultScaleCheckCountsHonorsCachedWriteThroughDependencies(t *testing.
 	}
 }
 
-func TestDefaultScaleCheckCountsMarksPartialWhenCachedEventDepsUnknown(t *testing.T) {
+func TestDefaultScaleCheckCountsFallsBackToLiveWhenCachedEventDepsUnknown(t *testing.T) {
 	backing := &readyStaticStore{
 		Store: beads.NewMemStore(),
 		ready: []beads.Bead{{
@@ -900,14 +950,14 @@ func TestDefaultScaleCheckCountsMarksPartialWhenCachedEventDepsUnknown(t *testin
 		storeKey: "rig:gascity",
 		store:    cache,
 	}})
-	if len(errs) != 1 {
-		t.Fatalf("defaultScaleCheckCounts errs = %v, want cache-unavailable partial", errs)
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v, want successful live fallback", errs)
 	}
-	if got := counts["gascity/workflows.codex-max"]; got != 0 {
-		t.Fatalf("defaultScaleCheckCounts = %d, want no live fallback count", got)
+	if got := counts["gascity/workflows.codex-max"]; got != 1 {
+		t.Fatalf("defaultScaleCheckCounts = %d, want live fallback count", got)
 	}
-	if backing.readyCalls != 0 {
-		t.Fatalf("backing Ready calls = %d, want no live ready fallback", backing.readyCalls)
+	if backing.readyCalls == 0 {
+		t.Fatal("backing Ready calls = 0, want live ready fallback")
 	}
 }
 
@@ -931,6 +981,36 @@ func TestDefaultScaleCheckCountsUsesPartialReadyRows(t *testing.T) {
 	}})
 	if got := counts["gascity/workflows.codex-max"]; got != 1 {
 		t.Fatalf("defaultScaleCheckCounts = %d, want survivor row counted", got)
+	}
+	if len(errs) != 1 || !beads.IsPartialResult(errs[0]) {
+		t.Fatalf("defaultScaleCheckCounts errs = %v, want partial-result diagnostic", errs)
+	}
+	if !partialTemplates["gascity/workflows.codex-max"] {
+		t.Fatalf("partialTemplates = %v, want affected template marked partial", partialTemplates)
+	}
+}
+
+func TestDefaultScaleCheckCountsUsesPartialPoolDemandRows(t *testing.T) {
+	store := &partialAssignedWorkStore{MemStore: beads.NewMemStore(), partialPoolDemand: true}
+	if _, err := store.Create(beads.Bead{
+		Title:  "pool demand wisp",
+		Type:   "molecule",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to":        "gascity/workflows.codex-max",
+			poolDemandMetadataKey: poolDemandMetadataValue,
+		},
+	}); err != nil {
+		t.Fatalf("create pool-demand bead: %v", err)
+	}
+
+	counts, partialTemplates, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
+		template: "gascity/workflows.codex-max",
+		storeKey: "rig:gascity",
+		store:    store,
+	}})
+	if got := counts["gascity/workflows.codex-max"]; got != 1 {
+		t.Fatalf("defaultScaleCheckCounts = %d, want partial pool-demand survivor counted", got)
 	}
 	if len(errs) != 1 || !beads.IsPartialResult(errs[0]) {
 		t.Fatalf("defaultScaleCheckCounts errs = %v, want partial-result diagnostic", errs)

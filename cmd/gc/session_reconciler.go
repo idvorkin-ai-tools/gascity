@@ -2414,7 +2414,7 @@ func firstOpenAssignedWorkBeadInStoreByIdentifiers(store beads.Store, identifier
 				continue
 			}
 			seen[key] = struct{}{}
-			items, err := store.List(beads.ListQuery{Assignee: assignee, Status: status, Live: true})
+			items, err := store.List(beads.ListQuery{Assignee: assignee, Status: status, Live: true, TierMode: beads.TierBoth})
 			if err != nil {
 				return beads.Bead{}, false, err
 			}
@@ -2579,7 +2579,7 @@ func collectSessionAssignedWork(cityPath string, cfg *config.City, store beads.S
 				if assignee == "" {
 					continue
 				}
-				items, err := s.List(beads.ListQuery{Assignee: assignee, Status: status, Live: true})
+				items, err := s.List(beads.ListQuery{Assignee: assignee, Status: status, Live: true, TierMode: beads.TierBoth})
 				if err != nil {
 					return err
 				}
@@ -2685,7 +2685,9 @@ func sessionHasOpenAssignedWispWork(store beads.Store, assignee, status string) 
 		CachedList(beads.ListQuery) ([]beads.Bead, bool)
 	}); ok {
 		if items, ok := cache.CachedList(query); ok {
-			return hasNonSessionAssignedWork(items), nil
+			if hasNonSessionAssignedWork(items) {
+				return true, nil
+			}
 		}
 	}
 	return sessionHasOpenAssignedWorkForTier(store, assignee, status, beads.TierWisps, true)
@@ -3263,6 +3265,7 @@ func resolveTaskWorkDir(store beads.Store, assignees ...string) string {
 			Assignee: assignee,
 			Status:   "in_progress",
 			Live:     true,
+			TierMode: beads.TierBoth,
 			Sort:     beads.SortCreatedDesc,
 		})
 		if err != nil {

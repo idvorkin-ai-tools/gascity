@@ -6,6 +6,8 @@ import (
 )
 
 // CachedReader is the cache-only eventual-consistency read handle for beads.
+// List reads across both bead tiers regardless of the caller's TierMode; use
+// the underlying Store directly for intentionally tier-scoped list queries.
 type CachedReader interface {
 	Get(id string) (Bead, error)
 	List(query ListQuery) ([]Bead, error)
@@ -13,7 +15,9 @@ type CachedReader interface {
 	DepList(id, direction string) ([]Dep, error)
 }
 
-// LiveReader is the authoritative read handle for beads.
+// LiveReader is the authoritative read handle for beads. List reads across both
+// bead tiers regardless of the caller's TierMode; use the underlying Store
+// directly for intentionally tier-scoped list queries.
 type LiveReader interface {
 	Get(id string) (Bead, error)
 	List(query ListQuery) ([]Bead, error)
