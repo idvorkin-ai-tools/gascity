@@ -108,11 +108,13 @@ mol-scoped-work
 pancakes
 ```
 
-Your fresh city carries several built-in `mol-*` formulas that ship with the
-bundled core and dolt packs (polecat worker scaffolds, review workflows, Dolt
-watchdog workflows, etc.).
-The list above shows those built-ins alongside the `pancakes` you just
-defined — the exact set may grow as new built-ins land, so expect your
+Your fresh city composes several `mol-*` formulas from the explicit imports
+that `gc init` wrote: bundled system packs such as `core` and `bd`/`dolt`,
+plus the default `gascity` methodology pack. Those imports provide the stock
+worker workflow, Dolt maintenance workflows, and planning or implementation
+workflows.
+The list above shows imported formulas alongside the `pancakes` you just
+defined — the exact set may grow as pack releases change, so expect your
 output to include additional `mol-*` entries.
 
 To see the compiled recipe for a specific formula:

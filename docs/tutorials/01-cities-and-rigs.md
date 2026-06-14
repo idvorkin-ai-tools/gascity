@@ -58,9 +58,10 @@ $ gc init ~/my-city
 Welcome to Gas City SDK!
 
 Choose a config template:
-  1. minimal   — default coding agent (default)
-  2. gastown   — multi-agent orchestration pack
-  3. custom    — empty workspace, configure it yourself
+  1. gascity   — planning & implementation skills pack (default)
+  2. minimal   — default coding agent
+  3. gastown   — multi-agent orchestration pack
+  4. custom    — empty workspace, configure it yourself
 Template [1]:
 
 Choose your coding agent:
@@ -74,7 +75,7 @@ Agent: 1
 [3/8] Writing default prompts
 [4/8] Writing pack.toml
 [5/8] Writing city configuration
-Created minimal config (Level 1) in "my-city".
+Created gascity config (Level 1) in "my-city".
 [6/8] Checking provider readiness
 [7/8] Registering city with supervisor
 Registered city 'my-city' (/Users/csells/my-city)
@@ -118,10 +119,10 @@ At the top level of the city directory:
 - `pack.toml` — the portable pack definition layer
 - `city.toml` — city-local deployment and runtime settings
 
-This city comes with a built-in `mayor` agent. The mayor's prompt lives at
+This city comes with a city-local `mayor` agent. The mayor's prompt lives at
 `agents/mayor/prompt.template.md`, and `pack.toml` defines the always-on mayor
-session that uses it. Assuming you chose the default `minimal` config
-template and Claude Code, `city.toml` keeps the shared runtime settings:
+session that uses it. Assuming you chose the default `gascity` config template
+and Claude Code, `city.toml` keeps the shared runtime settings:
 
 ```shell
 ~/my-city
@@ -157,6 +158,10 @@ version = "sha:<pinned commit>"
 source = "https://github.com/gastownhall/gascity.git//examples/bd"
 version = "sha:<pinned commit>"
 
+[imports.gascity]
+source = "https://github.com/gastownhall/gascity-packs/tree/main/gascity"
+version = "sha:<pinned commit>"
+
 [[named_session]]
 template = "mayor"
 mode = "always"
@@ -167,27 +172,28 @@ the provider. The `[providers.claude]` table registers your chosen provider
 against the builtin `claude` preset, and `[daemon]`'s `formula_v2 = true`
 turns on the v2 formula compiler — the default for new cities (you'll meet
 formulas in [Tutorial 05](/tutorials/05-formulas)). The `[imports]` entries
-in `pack.toml` pin the builtin packs bundled with the `gc` binary: `core`
-(housekeeping orders, doctor checks, default prompts, and core formulas) and
-— for cities on the default `bd` beads provider — `bd`, which brings in its
-`dolt` helper pack. They resolve offline from the user-global pack cache,
-which the binary keeps hydrated with its own embedded content. If these
+in `pack.toml` are explicit pack composition, not hidden load-time behavior.
+`core` and, for cities on the default `bd` beads provider, `bd` are bundled
+system packs that resolve offline from the user-global pack cache. The
+`gascity` import is the public planning and implementation skills pack pinned
+to the registry release embedded with this `gc` binary. If required builtin
 imports go missing, `gc doctor --fix` restores them. The machine-local
 workspace identity lives in `.gc/site.toml` instead, which is how `gc
 cities`, `gc status`, and other commands still know this city is named
 `my-city`.
 
-The built-in `mayor` comes from the scaffolded `agents/mayor/` content, and
-`[[named_session]]` keeps a `mayor` session running so you can talk to it at
-any time. When you add more agents later, Gas City creates `agents/<name>/`,
-with `prompt.template.md` for the prompt and `agent.toml` for any per-agent
+The `mayor` session comes from the scaffolded `agents/mayor/` content and the
+explicit `[[named_session]]` entry, so you can talk to it at any time. When
+you add more agents later, Gas City creates `agents/<name>/`, with
+`prompt.template.md` for the prompt and `agent.toml` for any per-agent
 overrides.
 
-Gas City also gives you an implicit agent for each provider declared in
-`city.toml`'s `[providers]` table — so `claude` is available as an agent name
-(and, once you add a rig, `<rig>/claude`) even though it's not listed in
-`pack.toml`. Implicit agents use the core pack's stock pool-worker prompt and
-get `mol-do-work` as their default sling formula — more on that in a moment.
+Gas City also derives a worker template for each provider declared in
+`city.toml`'s `[providers]` table — so `claude` is available as a template
+name (and, once you add a rig, `<rig>/claude`) even though it is not a
+hardcoded role. Provider-derived workers use the core pack's stock
+pool-worker prompt and get `mol-do-work` as their default sling formula —
+more on that in a moment.
 
 To check on the status of your city, use `gc status`:
 
@@ -218,9 +224,9 @@ materializes it; once the mayor session is up, its state reads `awake` (or
 `active` — the two are equivalent).
 
 The `dolt.dog` pool is a background utility agent from the bundled `dolt` pack
-(pulled in through the `bd` include you saw in `city.toml` — the `dolt.`
-prefix is the import binding it arrived through). It handles Dolt database
-housekeeping for the beads backend. `control-dispatcher` is SDK
+(pulled in transitively through the explicit `bd` import you saw in
+`pack.toml` — the `dolt.` prefix is the import binding it arrived through).
+It handles Dolt database housekeeping for the beads backend. `control-dispatcher` is SDK
 infrastructure: the controller uses it to advance formula workflows. You don't
 need to interact with either — ignore them for now.
 

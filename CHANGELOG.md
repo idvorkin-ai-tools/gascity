@@ -63,23 +63,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a runtime/pack mismatch fails in gascity CI.
 
 - **The bundled maintenance pack was folded into the core pack, and builtin
-  packs are no longer implicitly included.** There is now one builtin pack —
-  core — carrying everything any city needs: the gc-* skills, default worker
-  prompts, core formulas, the mechanical housekeeping orders that used to
-  ship in the maintenance pack (gate-sweep, orphan-sweep, cross-rig-deps,
-  order-tracking-sweep, spawn-storm-detect, prune-branches, wisp-compact,
-  nudge-mail-sweep, nudge-on-route, cascade-nudge-on-blocker-close), the
-  check-binaries doctor check, and the per-provider hook overlays. Config
-  load no longer splices builtin packs into composition: `gc init` writes
-  explicit includes into city.toml (`[workspace] includes =
-  [".gc/system/packs/core", ".gc/system/packs/bd"]`; the bd entry only for
-  bd-provider cities), and the new fixable `builtin-pack-includes` doctor
-  check repairs missing includes and removes stale
-  `.gc/system/packs/maintenance` references. Config load still self-heals
-  the materialized `.gc/system/packs` content and warns once per city when a
-  required builtin include is missing. **Migration:** run
-  `gc doctor --fix` once per existing city; stale materialized maintenance
-  directories are pruned automatically.
+  packs compose only through explicit pinned imports.** The bundled `core`
+  pack carries the gc-* skills, default worker prompts, core formulas, the
+  mechanical housekeeping orders that used to ship in the maintenance pack
+  (gate-sweep, orphan-sweep, cross-rig-deps, order-tracking-sweep,
+  spawn-storm-detect, prune-branches, wisp-compact, nudge-mail-sweep,
+  nudge-on-route, cascade-nudge-on-blocker-close), the check-binaries doctor
+  check, and the per-provider hook overlays. Config load no longer splices
+  builtin packs into composition: `gc init` writes explicit `[imports.core]`
+  and, for default bd-provider cities, `[imports.bd]` entries into
+  `pack.toml`, plus a matching `packs.lock`. The fixable
+  `builtin-pack-imports` doctor check repairs missing imports and migrates
+  legacy `workspace.includes = [".gc/system/packs/..."]` cities by stripping
+  those includes, adding the pinned imports, and pruning stale
+  `.gc/system/packs` materialization. **Migration:** run `gc doctor --fix`
+  once per existing city.
 - **The implicit fallback dog is gone, and the `fallback` agent field was
   removed.** The gastown pack now owns its dog pool outright
   (`agents/dog/`, themed, with `mol-shutdown-dance`), and the dolt pack
